@@ -6,6 +6,9 @@ import {captureFrames} from './lib/click-map.js'
 import {parseArgs} from './lib/args.js'
 import {readClipboard} from './lib/clipboard.js'
 import {isProbablyUrl} from './lib/platforms.js'
+import {runScriptable} from './lib/queue.js'
+import {resolveOutDir} from './lib/termux.js'
+import {ensureYtDlp} from './lib/ytdlp.js'
 
 // read at runtime from the shipped package.json so npm version bumps
 // can't drift from a hardcoded constant
@@ -24,6 +27,9 @@ const HELP = `
 
   Opciones
     --theme <modo>  usa auto, light o dark en esta ejecución
+    --best          baja la mejor calidad sin interactividad
+    --mp3           baja solo el audio (mp3) sin interactividad
+    -o <directorio> carpeta de destino (reemplaza ~/Downloads)
     -h, --help      muestra esta ayuda
     -v, --version   muestra la versión
 
@@ -52,6 +58,24 @@ const initialUrl = args.urls[0]
 const initialThemeMode = args.themeMode ?? 'auto'
 
 const isTTY = Boolean(process.stdout.isTTY)
+
+// scriptable mode: headless, no Ink render, no alt-screen (D10, REQ-003)
+if (args.scriptable && !isTTY) {
+  try {
+    const ytdlp = await ensureYtDlp(status => process.stderr.write(status + '\n'))
+    const outDir = args.outDir ?? (await resolveOutDir()).dir
+    const outcome = await runScriptable(
+      ytdlp,
+      args.urls.map(url => ({url})),
+      {outDir, scriptable: args.scriptable},
+    )
+    // runScriptable already printed filepaths (stdout) and errors (stderr)
+    process.exit(outcome.errors.length > 0 || outcome.cancelled ? 1 : 0)
+  } catch (error) {
+    console.error(`herlink: ${error instanceof Error ? error.message : String(error)}`)
+    process.exit(1)
+  }
+}
 
 // no url given — offer the clipboard url (⇥ to paste) when it already holds one
 let clipboardUrl: string | undefined
@@ -85,6 +109,7 @@ const {waitUntilExit} = render(
     initialUrl={initialUrl}
     clipboardUrl={clipboardUrl}
     initialThemeMode={initialThemeMode}
+    outDirOverride={args.outDir}
     onOutcome={result => (outcome = result)}
   />,
   // keep a copy of every frame so clicks can be hit-tested against it
@@ -94,6 +119,6 @@ const {waitUntilExit} = render(
 await waitUntilExit()
 
 if (isTTY) leaveAltScreen()
-if (outcome.filepath) {
-  console.log(`✓ descargado → ${outcome.filepath}`)
+for (const filepath of outcome.filepaths ?? []) {
+  console.log(`✓ descargado → ${filepath}`)
 }

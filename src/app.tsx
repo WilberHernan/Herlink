@@ -18,6 +18,8 @@ import {detectPlatform, isProbablyUrl, type Platform} from './lib/platforms.js'
 import {isTermux, resolveOutDir} from './lib/termux.js'
 import {useMouseClick} from './lib/use-mouse-click.js'
 import {nextThemeMode, ThemeProvider, type ThemeMode, useTheme} from './theme.js'
+import type {Outcome} from './lib/queue.js'
+export type {Outcome} from './lib/queue.js'
 import {
   buildChoices,
   download,
@@ -84,7 +86,10 @@ function indeterminateMeta(progress: DownloadProgress): string {
   return `${partLabel(progress)}${bytes.padStart(8)}  ·  ${speed.padEnd(10)}`
 }
 
-export type Outcome = {filepath?: string}
+/** -o wins over the ~/Downloads default (D12); the Termux effect is skipped when an override is set. */
+export function resolveInitialOutDir(outDirOverride: string | undefined, homeDir: string): string {
+  return outDirOverride ?? path.join(homeDir, 'Downloads')
+}
 
 type Phase =
   | {name: 'input'; warning?: string}
@@ -133,6 +138,7 @@ type AppProps = {
   initialUrl?: string
   clipboardUrl?: string
   initialThemeMode?: ThemeMode
+  outDirOverride?: string
   onOutcome: (outcome: Outcome) => void
 }
 
@@ -152,11 +158,13 @@ export function App({initialThemeMode = 'auto', ...props}: AppProps) {
 function AppContent({
   initialUrl,
   clipboardUrl,
+  outDirOverride,
   onOutcome,
   cycleTheme,
 }: {
   initialUrl?: string
   clipboardUrl?: string
+  outDirOverride?: string
   onOutcome: (outcome: Outcome) => void
   cycleTheme: () => void
 }) {
@@ -165,8 +173,9 @@ function AppContent({
   const {stdout} = useStdout()
   const [url, setUrl] = useState(initialUrl ?? '')
   const [urlInput, setUrlInput] = useState('')
-  // ~/Downloads default, then shared storage on Termux once resolveOutDir lands
-  const [outDir, setOutDir] = useState(path.join(os.homedir(), 'Downloads'))
+  // -o override wins; ~/Downloads default, then shared storage on Termux once
+  // resolveOutDir lands (effect below is skipped when the override is set)
+  const [outDir, setOutDir] = useState(() => resolveInitialOutDir(outDirOverride, os.homedir()))
   const [history, setHistory] = useState(loadHistory)
   const [platform, setPlatform] = useState<Platform>()
   const [info, setInfo] = useState<VideoInfo>()
@@ -211,12 +220,12 @@ function AppContent({
   }, [initialUrl, startProbe])
 
   useEffect(() => {
-    if (!isTermux()) return
+    if (!isTermux() || outDirOverride) return
     void resolveOutDir().then(({dir, hint}) => {
       setOutDir(dir)
       if (hint) process.stderr.write(hint + '\n')
     })
-  }, [])
+  }, [outDirOverride])
 
   const resetToInput = useCallback(() => {
     setUrl('')
@@ -286,7 +295,7 @@ function AppContent({
           )
           filepath = await download(base, handlers, controller.signal)
         }
-        onOutcome({filepath})
+        onOutcome({filepaths: [filepath]})
         setHistory(addToHistory(url))
         setPhase({name: 'done', filepath})
       } catch (error) {
