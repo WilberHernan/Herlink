@@ -1,3 +1,4 @@
+import fs from 'node:fs/promises'
 import {isThemeMode, type ThemeMode} from '../theme.js'
 import {isProbablyUrl} from './platforms.js'
 
@@ -86,6 +87,15 @@ export async function parseArgs(args: string[]): Promise<CliArgs> {
 
   if (result.scriptable && result.urls.length === 0 && !result.file) {
     return {...result, error: '--best/--mp3 necesitan una url o --file'}
+  }
+  if (result.cookies) {
+    // missing or unreadable cookies file fails at parse, before any probe or
+    // download (D1, REQ-008)
+    try {
+      await fs.access(result.cookies, fs.constants.R_OK)
+    } catch {
+      return {...result, error: `el archivo de cookies “${result.cookies}” no existe o no es legible`}
+    }
   }
   return result
 }

@@ -110,6 +110,8 @@ const {waitUntilExit} = render(
     clipboardUrl={clipboardUrl}
     initialThemeMode={initialThemeMode}
     outDirOverride={args.outDir}
+    resume={args.resume}
+    cookies={args.cookies}
     onOutcome={result => (outcome = result)}
   />,
   // keep a copy of every frame so clicks can be hit-tested against it

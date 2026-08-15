@@ -11,6 +11,8 @@ import {
   buildDownloadArgs,
   ensureYtDlp,
   findFfmpeg,
+  probe,
+  removePartials,
   type DownloadChoice,
   type VideoInfo,
 } from './ytdlp.js'
@@ -192,5 +194,165 @@ test('buildDownloadArgs() on desktop is unchanged (no --restrict-filenames)', ()
     ])
   } finally {
     restoreTermux()
+  }
+})
+
+test('buildDownloadArgs() adds --continue after the choice args when resume is set', () => {
+  const restoreTermux = termuxEnv(false)
+  try {
+    const args = buildDownloadArgs({
+      url: 'https://example.com/v',
+      choice,
+      outDir: path.join(os.homedir(), 'Downloads'),
+      resume: true,
+    })
+    // golden array — --continue lands right after choice.args, before the tail
+    assert.deepEqual(args, [
+      'https://example.com/v',
+      '-f',
+      'bv*+ba/b',
+      '--continue',
+      '--no-playlist',
+      '--no-warnings',
+      '--newline',
+      '--no-quiet',
+      '--progress',
+      '--progress-template',
+      'download:HERLINK|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s',
+      '--print',
+      'after_move:filepath',
+      '--no-simulate',
+      '-o',
+      path.join(os.homedir(), 'Downloads', '%(title).60s.%(ext)s'),
+    ])
+  } finally {
+    restoreTermux()
+  }
+})
+
+test('buildDownloadArgs() inserts --cookies right after the url when cookies are set', () => {
+  const restoreTermux = termuxEnv(false)
+  try {
+    const args = buildDownloadArgs({
+      url: 'https://example.com/v',
+      choice,
+      outDir: path.join(os.homedir(), 'Downloads'),
+      cookies: '/tmp/cookies.txt',
+    })
+    // golden array — --cookies <file> lands between the url and choice.args
+    assert.deepEqual(args, [
+      'https://example.com/v',
+      '--cookies',
+      '/tmp/cookies.txt',
+      '-f',
+      'bv*+ba/b',
+      '--no-playlist',
+      '--no-warnings',
+      '--newline',
+      '--no-quiet',
+      '--progress',
+      '--progress-template',
+      'download:HERLINK|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s',
+      '--print',
+      'after_move:filepath',
+      '--no-simulate',
+      '-o',
+      path.join(os.homedir(), 'Downloads', '%(title).60s.%(ext)s'),
+    ])
+  } finally {
+    restoreTermux()
+  }
+})
+
+test('buildDownloadArgs() keeps a cookies path starting with "-" as its own argv element', () => {
+  const restoreTermux = termuxEnv(false)
+  try {
+    const args = buildDownloadArgs({
+      url: 'https://example.com/v',
+      choice,
+      outDir: path.join(os.homedir(), 'Downloads'),
+      cookies: '-strange-cookies',
+    })
+    // spawn() receives separate argv elements — never a merged "--cookies=-x"
+    const flagIndex = args.indexOf('--cookies')
+    assert.notEqual(flagIndex, -1, '--cookies must be present')
+    assert.equal(args[flagIndex + 1], '-strange-cookies')
+  } finally {
+    restoreTermux()
+  }
+})
+
+test('removePartials() deletes dest and .ytdl but keeps .part (REQ-006)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'herlink-partials-'))
+  try {
+    const dest = path.join(dir, 'video.mp4')
+    fs.writeFileSync(dest, 'complete')
+    fs.writeFileSync(`${dest}.part`, 'partial-data')
+    fs.writeFileSync(`${dest}.ytdl`, 'resume-meta')
+    await removePartials([dest])
+    assert.equal(fs.existsSync(dest), false)
+    assert.equal(fs.existsSync(`${dest}.ytdl`), false)
+    assert.equal(fs.existsSync(`${dest}.part`), true)
+    assert.equal(fs.readFileSync(`${dest}.part`, 'utf8'), 'partial-data')
+  } finally {
+    fs.rmSync(dir, {recursive: true, force: true})
+  }
+})
+
+test('probe() passes --cookies <file> to the yt-dlp argv (REQ-007)', async () => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'herlink-bin-'))
+  const argsOut = path.join(bin, 'args.txt')
+  try {
+    fs.writeFileSync(
+      path.join(bin, 'fake-ytdlp'),
+      '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$FAKE_ARGS_OUT"\nprintf \'{"title":"fake"}\'\n',
+      {mode: 0o755},
+    )
+    const prev = process.env.FAKE_ARGS_OUT
+    process.env.FAKE_ARGS_OUT = argsOut
+    try {
+      const {info, infoJsonPath} = await probe(
+        path.join(bin, 'fake-ytdlp'),
+        'https://example.com/v',
+        undefined,
+        '/tmp/cookies.txt',
+      )
+      assert.equal(info.title, 'fake')
+      const argv = fs.readFileSync(argsOut, 'utf8').trim().split('\n')
+      assert.ok(argv.includes('--cookies'))
+      assert.equal(argv[argv.indexOf('--cookies') + 1], '/tmp/cookies.txt')
+      await fs.promises.rm(infoJsonPath, {force: true})
+    } finally {
+      if (prev === undefined) delete process.env.FAKE_ARGS_OUT
+      else process.env.FAKE_ARGS_OUT = prev
+    }
+  } finally {
+    fs.rmSync(bin, {recursive: true, force: true})
+  }
+})
+
+test('probe() omits --cookies when none are given', async () => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'herlink-bin-'))
+  const argsOut = path.join(bin, 'args.txt')
+  try {
+    fs.writeFileSync(
+      path.join(bin, 'fake-ytdlp'),
+      '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$FAKE_ARGS_OUT"\nprintf \'{"title":"fake"}\'\n',
+      {mode: 0o755},
+    )
+    const prev = process.env.FAKE_ARGS_OUT
+    process.env.FAKE_ARGS_OUT = argsOut
+    try {
+      const {info, infoJsonPath} = await probe(path.join(bin, 'fake-ytdlp'), 'https://example.com/v')
+      assert.equal(info.title, 'fake')
+      const argv = fs.readFileSync(argsOut, 'utf8').trim().split('\n')
+      assert.ok(!argv.includes('--cookies'))
+      await fs.promises.rm(infoJsonPath, {force: true})
+    } finally {
+      if (prev === undefined) delete process.env.FAKE_ARGS_OUT
+      else process.env.FAKE_ARGS_OUT = prev
+    }
+  } finally {
+    fs.rmSync(bin, {recursive: true, force: true})
   }
 })

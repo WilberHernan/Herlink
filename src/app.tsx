@@ -139,6 +139,8 @@ type AppProps = {
   clipboardUrl?: string
   initialThemeMode?: ThemeMode
   outDirOverride?: string
+  resume?: boolean
+  cookies?: string
   onOutcome: (outcome: Outcome) => void
 }
 
@@ -159,12 +161,16 @@ function AppContent({
   initialUrl,
   clipboardUrl,
   outDirOverride,
+  resume,
+  cookies,
   onOutcome,
   cycleTheme,
 }: {
   initialUrl?: string
   clipboardUrl?: string
   outDirOverride?: string
+  resume?: boolean
+  cookies?: string
   onOutcome: (outcome: Outcome) => void
   cycleTheme: () => void
 }) {
@@ -202,7 +208,7 @@ function AppContent({
       ytdlpRef.current = ytdlp
       if (controller.signal.aborted) return
       setPhase({name: 'probing', status: 'obteniendo info del video…'})
-      const {info: videoInfo, infoJsonPath} = await probe(ytdlp, targetUrl, controller.signal)
+      const {info: videoInfo, infoJsonPath} = await probe(ytdlp, targetUrl, controller.signal, cookies)
       if (controller.signal.aborted) return
       infoJsonRef.current = infoJsonPath
       setInfo(videoInfo)
@@ -282,7 +288,7 @@ function AppContent({
       }
       try {
         const ffmpegLocation = await findFfmpeg()
-        const base = {ytdlp: ytdlpRef.current, ffmpegLocation, url, choice, outDir}
+        const base = {ytdlp: ytdlpRef.current, ffmpegLocation, url, choice, outDir, resume, cookies}
         let filepath: string
         try {
           // reuse the probe's metadata — starts immediately instead of re-extracting

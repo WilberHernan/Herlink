@@ -114,9 +114,17 @@ export type ProbeResult = {
   infoJsonPath: string
 }
 
-export async function probe(ytdlp: string, url: string, signal?: AbortSignal): Promise<ProbeResult> {
+export async function probe(
+  ytdlp: string,
+  url: string,
+  signal?: AbortSignal,
+  cookies?: string,
+): Promise<ProbeResult> {
+  const argv = ['-J', '--no-playlist', '--no-warnings']
+  if (cookies) argv.push('--cookies', cookies)
+  argv.push(url)
   const stdout = await new Promise<string>((resolve, reject) => {
-    const child = spawn(ytdlp, ['-J', '--no-playlist', '--no-warnings', url], {signal})
+    const child = spawn(ytdlp, argv, {signal})
     let out = ''
     let stderr = ''
     child.stdout.on('data', chunk => (out += chunk))
@@ -243,6 +251,10 @@ export type DownloadArgs = {
   choice: DownloadChoice
   outDir: string
   ffmpegLocation?: string
+  /** --continue: resume a partial download instead of restarting (REQ-005). */
+  resume?: boolean
+  /** Netscape cookies file, passed to yt-dlp for auth (REQ-007). */
+  cookies?: string
 }
 
 // pure aside from a call-time env read, so the Termux/desktop argument sets
@@ -250,7 +262,9 @@ export type DownloadArgs = {
 export function buildDownloadArgs(opts: DownloadArgs): string[] {
   const args = [
     ...(opts.infoJsonPath ? ['--load-info-json', opts.infoJsonPath] : [opts.url]),
+    ...(opts.cookies ? ['--cookies', opts.cookies] : []),
     ...opts.choice.args,
+    ...(opts.resume ? ['--continue'] : []),
     '--no-playlist',
     '--no-warnings',
     '--newline',
@@ -348,10 +362,12 @@ export function download(
   })
 }
 
-function removePartials(destinations: string[]): Promise<unknown> {
+// KEEPS .part files so a later --continue can resume (D6, REQ-006); deletes
+// only the final destination and the .ytdl resume metadata.
+export function removePartials(destinations: string[]): Promise<unknown> {
   return Promise.allSettled(
     destinations
-      .flatMap(dest => [dest, `${dest}.part`, `${dest}.ytdl`])
+      .flatMap(dest => [dest, `${dest}.ytdl`])
       .map(file => fs.rm(file, {force: true})),
   )
 }

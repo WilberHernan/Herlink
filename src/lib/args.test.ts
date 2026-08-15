@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import test from 'node:test'
 import {parseArgs} from './args.js'
 import {isThemeMode, nextThemeMode, themeFor} from '../theme.js'
@@ -76,10 +79,23 @@ test('-o sets the outDir override', async () => {
 })
 
 test('--cookies and --file store their paths', async () => {
-  const result = await parseArgs(['--cookies', 'cookies.txt', '--file', 'urls.txt', 'https://example.com/v'])
-  assert.equal(result.error, undefined)
-  assert.equal(result.cookies, 'cookies.txt')
-  assert.equal(result.file, 'urls.txt')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'herlink-args-'))
+  try {
+    const cookiesPath = path.join(dir, 'cookies.txt')
+    fs.writeFileSync(cookiesPath, '# Netscape HTTP Cookie File\n')
+    const result = await parseArgs(['--cookies', cookiesPath, '--file', 'urls.txt', 'https://example.com/v'])
+    assert.equal(result.error, undefined)
+    assert.equal(result.cookies, cookiesPath)
+    assert.equal(result.file, 'urls.txt')
+  } finally {
+    fs.rmSync(dir, {recursive: true, force: true})
+  }
+})
+
+test('--cookies with a missing file fails with a clear file error (REQ-008)', async () => {
+  const result = await parseArgs(['--cookies', './missing-cookies.txt', 'https://example.com/v'])
+  assert.match(result.error ?? '', /missing-cookies\.txt/)
+  assert.match(result.error ?? '', /no existe o no es legible/)
 })
 
 test('--subs with a lang list consumes the next token', async () => {
