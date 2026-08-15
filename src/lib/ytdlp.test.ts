@@ -12,6 +12,7 @@ import {
   ensureYtDlp,
   findFfmpeg,
   isBundledBinary,
+  effectiveNoUpdate,
   isPlaylistInfo,
   maybeSelfUpdate,
   playlistOption,
@@ -676,6 +677,17 @@ test('isBundledBinary() identifies only the ~/.herlink/bin copy (REQ-020)', () =
   assert.equal(isBundledBinary(path.join(os.homedir(), '.herlink', 'bin', 'yt-dlp.exe')), true, 'win32 name')
   assert.equal(isBundledBinary('yt-dlp'), false, 'PATH resolution result is never bundled')
   assert.equal(isBundledBinary('/usr/local/bin/yt-dlp'), false, 'a user-managed copy is not bundled')
+})
+
+test('effectiveNoUpdate() adds --no-update for the bundled binary (REQ-022 s2)', () => {
+  const bundled = path.join(os.homedir(), '.herlink', 'bin', 'yt-dlp')
+  const pathBinary = '/usr/local/bin/yt-dlp'
+  // bundled → true regardless of the user flag (herlink manages freshness)
+  assert.equal(effectiveNoUpdate(false, bundled), true)
+  assert.equal(effectiveNoUpdate(true, bundled), true)
+  // PATH copy → only the explicit user flag
+  assert.equal(effectiveNoUpdate(false, pathBinary), false)
+  assert.equal(effectiveNoUpdate(true, pathBinary), true)
 })
 
 // Plants a fake yt-dlp at <tmpHome>/.herlink/bin/yt-dlp and points $HOME at

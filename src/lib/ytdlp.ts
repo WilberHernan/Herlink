@@ -91,6 +91,15 @@ export function isBundledBinary(binary: string): boolean {
 }
 
 /**
+ * REQ-022: --no-update in probe/download args whenever the bundled binary is
+ * in use (herlink manages freshness) or the user passed the flag. Pure so the
+ * call sites (cli/app) and the golden tests share one rule.
+ */
+export function effectiveNoUpdate(userNoUpdate: boolean, binary: string): boolean {
+  return userNoUpdate || isBundledBinary(binary)
+}
+
+/**
  * Silent startup self-update (D11): runs `yt-dlp -U` ONLY for the bundled
  * ~/.herlink/bin copy — never for a PATH `yt-dlp` or a Termux pkg install
  * (REQ-020). Never throws and never blocks startup: every failure path falls

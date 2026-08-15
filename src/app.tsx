@@ -22,6 +22,7 @@ import {runQueue, type Outcome} from './lib/queue.js'
 export type {Outcome} from './lib/queue.js'
 import {
   buildChoices,
+  effectiveNoUpdate,
   ensureYtDlp,
   findFfmpeg,
   isBundledBinary,
@@ -230,9 +231,12 @@ function AppContent({
         const ytdlp =
           ytdlpRef.current ||
           (await ensureYtDlp(status => setPhase({name: 'probing', status}), controller.signal))
-        // bundled-only silent self-update, once per run (D11, REQ-020/021);
+        // herlink manages freshness of the bundled copy: silent -U once per run
+        // (D11, REQ-020/021) and --no-update in probe/download args (REQ-022);
         // --no-update opts out; failure never blocks startup
-        if (!ytdlpRef.current && !noUpdate && isBundledBinary(ytdlp)) {
+        const bundled = isBundledBinary(ytdlp)
+        const effectiveNoUpdate_ = effectiveNoUpdate(noUpdate ?? false, ytdlp)
+        if (!ytdlpRef.current && !noUpdate && bundled) {
           await maybeSelfUpdate(ytdlp, status => setPhase({name: 'probing', status}))
         }
         ytdlpRef.current = ytdlp
@@ -252,7 +256,7 @@ function AppContent({
             cookies,
             embedMetadata,
             subs,
-            noUpdate,
+            noUpdate: effectiveNoUpdate_,
             signal: controller.signal,
             onItem: index => {
               setQueueIndex(index)

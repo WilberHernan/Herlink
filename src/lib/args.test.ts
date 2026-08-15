@@ -47,6 +47,18 @@ test('rejects missing, invalid, and unknown options', async () => {
   assert.match((await parseArgs(['--wat'])).error ?? '', /opción desconocida/)
 })
 
+test('rejects a positional that is not a url, naming it (REQ-015)', async () => {
+  const result = await parseArgs(['notaurl'])
+  assert.ok(result.error)
+  assert.match(result.error, /notaurl/)
+  assert.match(result.error, /no parece una url válida/)
+  assert.equal(result.urls.length, 0)
+  // a valid url next to the junk still fails — no partial run
+  const mixed = await parseArgs(['https://example.com/v', 'junk'])
+  assert.ok(mixed.error)
+  assert.match(mixed.error, /junk/)
+})
+
 test('--best and --mp3 are mutually exclusive', async () => {
   assert.match((await parseArgs(['--best', '--mp3', 'https://example.com/v'])).error ?? '', /mutuamente excluyentes/)
   assert.match((await parseArgs(['--mp3', '--best', 'https://example.com/v'])).error ?? '', /mutuamente excluyentes/)
@@ -176,14 +188,14 @@ test('--subs=langs equals form', async () => {
 })
 
 test('--no-embed-metadata wins over --embed-metadata in either order', async () => {
-  assert.equal((await parseArgs(['--embed-metadata', '--no-embed-metadata', 'u'])).embedMetadata, false)
-  assert.equal((await parseArgs(['--no-embed-metadata', '--embed-metadata', 'u'])).embedMetadata, false)
-  assert.equal((await parseArgs(['--embed-metadata', 'u'])).embedMetadata, true)
-  assert.equal((await parseArgs(['u'])).embedMetadata, false)
+  assert.equal((await parseArgs(['--embed-metadata', '--no-embed-metadata', 'https://example.com/v'])).embedMetadata, false)
+  assert.equal((await parseArgs(['--no-embed-metadata', '--embed-metadata', 'https://example.com/v'])).embedMetadata, false)
+  assert.equal((await parseArgs(['--embed-metadata', 'https://example.com/v'])).embedMetadata, true)
+  assert.equal((await parseArgs(['https://example.com/v'])).embedMetadata, false)
 })
 
 test('--continue sets resume and --no-update sets noUpdate', async () => {
-  const result = await parseArgs(['--continue', '--no-update', 'u'])
+  const result = await parseArgs(['--continue', '--no-update', 'https://example.com/v'])
   assert.equal(result.error, undefined)
   assert.equal(result.resume, true)
   assert.equal(result.noUpdate, true)

@@ -67,7 +67,6 @@ range flags).
 | `--embed-metadata` | embed title/thumbnail/metadata (requires ffmpeg) |
 | `--no-update` | skip the bundled yt-dlp self-update for one run |
 | `--file <file>` | read urls from a file (one per line) |
-| `--playlist-start N` / `--playlist-end N` | playlist entry window |
 | `-h` / `-v` | help / version |
 
 The `auto` theme resolves to the matte-black dark palette — the app's

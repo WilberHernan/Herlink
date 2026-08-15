@@ -80,8 +80,11 @@ export async function parseArgs(args: string[]): Promise<CliArgs> {
       result.noUpdate = true
     } else if (arg.startsWith('-')) {
       return {...result, error: `opción desconocida “${arg}”`}
-    } else {
+    } else if (isProbablyUrl(arg)) {
       result.urls.push(arg)
+    } else {
+      // positional that is not a url — fail at parse, no partial run (REQ-015)
+      return {...result, error: `“${arg}” no parece una url válida`}
     }
   }
 
