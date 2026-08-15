@@ -29,6 +29,8 @@ export type QueueRunOptions = {
   ytdlp: string
   outDir: string
   ffmpeg: FfmpegStatus
+  resume?: boolean
+  cookies?: string
   embedMetadata?: boolean
   subs?: string
   // TTY defers to the picker ('pick'), scriptable resolves immediately
@@ -61,7 +63,7 @@ export async function runQueue(
       cancelled = true
       break
     }
-    const {info, infoJsonPath} = await doProbe(opts.ytdlp, item.url, opts.signal)
+    const {info, infoJsonPath} = await doProbe(opts.ytdlp, item.url, opts.signal, opts.cookies)
     if (opts.signal?.aborted) {
       cancelled = true
       break
@@ -85,6 +87,8 @@ export async function runQueue(
       choice,
       outDir: opts.outDir,
       ffmpeg: opts.ffmpeg,
+      resume: opts.resume,
+      cookies: opts.cookies,
       embedMetadata: opts.embedMetadata,
       subs: opts.subs,
     }
@@ -114,6 +118,8 @@ export async function runQueue(
 export type ScriptableOptions = {
   outDir: string
   scriptable: 'best' | 'mp3'
+  resume?: boolean
+  cookies?: string
   embedMetadata?: boolean
   subs?: string
   signal?: AbortSignal
@@ -140,6 +146,8 @@ export async function runScriptable(
       ytdlp,
       outDir: opts.outDir,
       ffmpeg,
+      resume: opts.resume,
+      cookies: opts.cookies,
       embedMetadata: opts.embedMetadata,
       subs: opts.subs,
       signal: opts.signal,

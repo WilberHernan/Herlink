@@ -102,3 +102,71 @@ test('runScriptable with --mp3 downloads the audio choice', async () => {
     fs.rmSync(tmp, {recursive: true, force: true})
   }
 })
+
+test('runQueue threads resume, cookies, embedMetadata and subs into probe and download', async () => {
+  let seenProbeCookies: string | undefined
+  let seenDownload: DownloadArgs | undefined
+  const outcome = await runQueue(
+    [{url: 'https://example.com/v'}],
+    {
+      ytdlp: 'yt-dlp',
+      outDir: '/tmp/Downloads',
+      ffmpeg: {available: true, location: '/usr/bin/ffmpeg'},
+      resume: true,
+      cookies: '/tmp/cookies.txt',
+      embedMetadata: true,
+      subs: 'es,en',
+      choiceFor: () => choice,
+    },
+    {
+      probe: async (_ytdlp, _url, _signal, cookies) => {
+        seenProbeCookies = cookies
+        return {info: info(), infoJsonPath: '/tmp/info.json'}
+      },
+      download: async (opts: DownloadArgs & {ytdlp: string}) => {
+        seenDownload = opts
+        return '/tmp/Downloads/video.mp4'
+      },
+    },
+  )
+  assert.equal(outcome.filepaths.length, 1)
+  assert.equal(seenProbeCookies, '/tmp/cookies.txt', 'probe must receive cookies for auth')
+  assert.equal(seenDownload?.resume, true, 'download must receive resume')
+  assert.equal(seenDownload?.cookies, '/tmp/cookies.txt', 'download must receive cookies')
+  assert.equal(seenDownload?.embedMetadata, true, 'download must receive embedMetadata')
+  assert.equal(seenDownload?.subs, 'es,en', 'download must receive subs')
+})
+
+test('runScriptable threads resume, cookies, embedMetadata and subs into the queue driver', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'herlink-out-'))
+  const log = mock.method(console, 'log', () => {})
+  let seenProbeCookies: string | undefined
+  let seenDownload: DownloadArgs | undefined
+  try {
+    const outDir = path.join(tmp, 'videos')
+    await runScriptable(
+      'yt-dlp',
+      [{url: 'https://example.com/v'}],
+      {outDir, scriptable: 'best', resume: true, cookies: '/tmp/cookies.txt', embedMetadata: true, subs: 'es,en'},
+      {
+        probe: async (_ytdlp, _url, _signal, cookies) => {
+          seenProbeCookies = cookies
+          return {info: info(), infoJsonPath: '/tmp/info.json'}
+        },
+        download: async (opts: DownloadArgs & {ytdlp: string}) => {
+          seenDownload = opts
+          return path.join(outDir, 'v.mp4')
+        },
+        findFfmpeg: async () => ({available: true}),
+      },
+    )
+    assert.equal(seenProbeCookies, '/tmp/cookies.txt', 'scriptable probe must receive cookies')
+    assert.equal(seenDownload?.resume, true, 'scriptable download must receive resume')
+    assert.equal(seenDownload?.cookies, '/tmp/cookies.txt', 'scriptable download must receive cookies')
+    assert.equal(seenDownload?.embedMetadata, true, 'scriptable download must receive embedMetadata')
+    assert.equal(seenDownload?.subs, 'es,en', 'scriptable download must receive subs')
+  } finally {
+    log.mock.restore()
+    fs.rmSync(tmp, {recursive: true, force: true})
+  }
+})
