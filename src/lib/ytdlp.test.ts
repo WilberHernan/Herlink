@@ -4,7 +4,16 @@ import os from 'node:os'
 import path from 'node:path'
 import {mock} from 'node:test'
 import test from 'node:test'
-import {buildDownloadArgs, ensureYtDlp, findFfmpeg, type DownloadChoice} from './ytdlp.js'
+import {
+  audioChoice,
+  bestChoice,
+  buildChoices,
+  buildDownloadArgs,
+  ensureYtDlp,
+  findFfmpeg,
+  type DownloadChoice,
+  type VideoInfo,
+} from './ytdlp.js'
 
 const PREFIX = '/data/data/com.termux/files/usr'
 const noop = () => {}
@@ -104,6 +113,27 @@ test('findFfmpeg() on Termux with ffmpeg on PATH returns undefined without a hin
 })
 
 const choice: DownloadChoice = {label: '1080p · mp4', kind: 'video', args: ['-f', 'bv*+ba/b']}
+
+const VIDEO_INFO: VideoInfo = {
+  title: 'test',
+  formats: [
+    {format_id: '1', vcodec: 'avc1', acodec: 'mp4a', height: 720, ext: 'mp4'},
+    {format_id: '2', vcodec: 'avc1', acodec: 'none', height: 1080, ext: 'mp4'},
+    {format_id: '3', acodec: 'mp4a', vcodec: 'none', abr: 128, ext: 'm4a'},
+  ],
+}
+
+test('bestChoice() returns the top video and audioChoice() the mp3 option', () => {
+  const best = bestChoice(VIDEO_INFO)
+  assert.equal(best.kind, 'video')
+  assert.ok(best.args.some(a => a.includes('1080')), 'top fixture height must be the best choice')
+  // no formats at all — falls back to the "mejor disponible" video choice
+  assert.equal(bestChoice({title: 'sin formatos'}).kind, 'video')
+  const audio = audioChoice(VIDEO_INFO)
+  assert.equal(audio.kind, 'audio')
+  assert.ok(audio.args.includes('-x'))
+  assert.ok(audio.args.includes('mp3'))
+})
 
 test('buildDownloadArgs() adds --restrict-filenames on Termux shared storage', () => {
   const restoreTermux = termuxEnv(true)

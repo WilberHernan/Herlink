@@ -198,11 +198,21 @@ export function buildChoices(info: VideoInfo): DownloadChoice[] {
   return choices
 }
 
-function scoreVideo(f: RawFormat): number {
+export function scoreVideo(f: RawFormat): number {
   let score = f.tbr ?? 0
   if (f.ext === 'mp4') score += 10_000
   if (f.vcodec?.startsWith('avc')) score += 5_000
   return score
+}
+
+/** The top video choice (or the "mejor disponible" fallback) — what --best downloads. */
+export function bestChoice(info: VideoInfo): DownloadChoice {
+  return buildChoices(info)[0]!
+}
+
+/** The audio-only mp3 choice — what --mp3 downloads. */
+export function audioChoice(info: VideoInfo): DownloadChoice {
+  return buildChoices(info).at(-1)!
 }
 
 export type DownloadProgress = {
