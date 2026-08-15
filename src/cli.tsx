@@ -18,23 +18,31 @@ const HELP = `
   herlink
 
   Uso
-    $ herlink [url]
+    $ herlink [url...]
 
   Ejemplos
     $ herlink https://youtu.be/dQw4w9WgXcQ
     $ herlink https://x.com/user/status/123456
+    $ herlink https://youtube.com/playlist?list=... --best
+    $ herlink --file urls.txt
     $ herlink                 (pide una url)
 
   Opciones
-    --theme <modo>  usa auto, light o dark en esta ejecución
-    --best          baja la mejor calidad sin interactividad
-    --mp3           baja solo el audio (mp3) sin interactividad
-    -o <directorio> carpeta de destino (reemplaza ~/Downloads)
-    -h, --help      muestra esta ayuda
-    -v, --version   muestra la versión
+    --theme <modo>    usa auto, light o dark en esta ejecución
+    --best            baja la mejor calidad sin interactividad (cada url)
+    --mp3             baja solo el audio (mp3) sin interactividad
+    -o <directorio>   carpeta de destino (reemplaza ~/Downloads)
+    --continue        reanuda descargas parciales (.part)
+    --cookies <archivo>  cookies Netscape para sitios que piden sesión
+    --subs [idiomas]  baja subtítulos (--subs=es,en; vacío = todos)
+    --embed-metadata  incrusta título, miniatura y metadatos (requiere ffmpeg)
+    --no-update       no auto-actualizar yt-dlp en esta ejecución
+    --file <archivo>  lee urls desde un archivo (una por línea)
+    -h, --help        muestra esta ayuda
+    -v, --version     muestra la versión
 
   Las descargas se guardan en ~/Downloads (~/storage/documents/Videos Termux en Termux).
-  Impulsado por yt-dlp — YouTube, X, Instagram, Threads, TikTok y más de 1800 sitios.
+  Impulsado por yt-dlp — YouTube, X, Instagram, TikTok y más de 1600 sitios.
 `
 
 const args = await parseArgs(process.argv.slice(2))

@@ -35,6 +35,10 @@ automatically.
 $ herlink https://youtu.be/dQw4w9WgXcQ    # straight to the format picker
 $ herlink                                 # prompts for a url
 $ herlink --theme light                   # force the light palette
+$ herlink --best https://youtu.be/dQw4w9WgXcQ   # skip the picker, best quality
+$ herlink --mp3 https://youtu.be/dQw4w9WgXcQ    # audio-only mp3
+$ herlink --file urls.txt                 # batch download (one url per line)
+$ herlink "https://youtube.com/playlist?list=..." --best   # whole playlist
 ```
 
 herlink takes over the terminal (full-screen, centered — and restores your
@@ -44,11 +48,32 @@ button, the format list and the footer hints are all clickable, and
 clicking the logo takes you back home. Files are saved to `~/Downloads`,
 and the file path is printed to your terminal when you're done.
 
+Multiple urls (or a `--file`) download one after another — you pick the
+format for each, `esc` cancels the rest, and interrupted downloads keep
+their `.part` files so `--continue` can resume them. Playlist urls offer
+a "download all N videos" option (also via `--playlist-start`/`--playlist-end`
+range flags).
+
+### Flags
+
+| Flag | What it does |
+| --- | --- |
+| `--theme <auto\|light\|dark>` | starting theme for one launch |
+| `--best` / `--mp3` | scriptable mode: no picker, applies to every url |
+| `-o <dir>` | output folder (replaces `~/Downloads` for the run) |
+| `--continue` | resume partial downloads (keeps `.part`) |
+| `--cookies <file>` | Netscape-format cookies file for login-gated sites |
+| `--subs [langs]` | download subtitles (`--subs=es,en`; empty = all languages) |
+| `--embed-metadata` | embed title/thumbnail/metadata (requires ffmpeg) |
+| `--no-update` | skip the bundled yt-dlp self-update for one run |
+| `--file <file>` | read urls from a file (one per line) |
+| `--playlist-start N` / `--playlist-end N` | playlist entry window |
+| `-h` / `-v` | help / version |
+
 The `auto` theme resolves to the matte-black dark palette — the app's
 primary environment is a dark Termux terminal. Press `^t` or click the
 theme control in the footer to cycle through `auto`, `light`, and `dark`
-for the current session. Use `--theme auto`, `--theme light`, or
-`--theme dark` to choose the starting theme for one launch.
+for the current session.
 
 <img src="assets/download-options.png" alt="herlink format picker — resolutions with estimated file sizes, plus audio-only mp3" width="100%">
 
@@ -77,13 +102,16 @@ To try it as a global command without publishing: `npm link`, then run
 
 ## Roadmap
 
-- [ ] `--best` / `--mp3` flags to skip the picker (scriptable mode)
-- [ ] `-o <dir>` to choose the output folder
-- [ ] Playlist / thread-with-multiple-videos support
 - [ ] Clipboard detection: launch bare and auto-suggest the url you copied
-- [ ] Self-update for the bundled yt-dlp binary (`yt-dlp -U`)
-- [x] Publish to npm (`npm i -g herlink` / `npx herlink`)
 - [ ] `curl herlink.sh | sh` installer
+- [x] Publish to npm (`npm i -g herlink` / `npx herlink`)
+- [x] `--best` / `--mp3` flags to skip the picker (scriptable mode)
+- [x] `-o <dir>` to choose the output folder
+- [x] Batch queue: multiple urls / `--file`, sequential downloads
+- [x] Playlist and thread-with-multiple-videos support
+- [x] Resume (`--continue`), cookies (`--cookies`), subtitles (`--subs`),
+      metadata embedding (`--embed-metadata`)
+- [x] Self-update for the bundled yt-dlp binary (`yt-dlp -U`, silent)
 
 ## A note on fair use
 
