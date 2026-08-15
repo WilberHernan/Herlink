@@ -108,6 +108,31 @@ export type VideoInfo = {
   webpage_url?: string
   extractor_key?: string
   formats?: RawFormat[]
+  // playlist context — present on first-entry JSON even with --no-playlist (D7)
+  _type?: string
+  playlist_id?: string
+  playlist_count?: number
+}
+
+/**
+ * Playlist detection (D7): a probe of a playlist URL returns the first video's
+ * JSON, where extractor_key stays "Youtube" — the playlist_id is the reliable
+ * signal. _type === 'playlist' and the ':playlist' extractor suffix are the
+ * spec-listed signals for other extractors (X/Instagram threads).
+ */
+export function isPlaylistInfo(info: VideoInfo): boolean {
+  return info._type === 'playlist' || info.extractor_key?.endsWith(':playlist') || Boolean(info.playlist_id)
+}
+
+/**
+ * Picker option for the playlist choice (REQ-018): offered alongside the
+ * format choices when the probed URL is a playlist. count is undefined when
+ * yt-dlp did not report playlist_count (D13 fallback label).
+ */
+export function playlistOption(info: VideoInfo): {label: string; count?: number} | undefined {
+  if (!isPlaylistInfo(info)) return undefined
+  const count = typeof info.playlist_count === 'number' ? info.playlist_count : undefined
+  return {label: count ? `descargar los ${count} videos` : 'descargar todos los videos', count}
 }
 
 type RawFormat = {
@@ -274,6 +299,10 @@ export type DownloadArgs = {
   embedMetadata?: boolean
   /** Subtitle langs, '' = all; video kind only (REQ-012/014). */
   subs?: string
+  /** Playlist mode: playlist:true omits --no-playlist; with playlistIndex the
+   * entry window --playlist-start/end N scopes the run to one entry (D8). */
+  playlist?: boolean
+  playlistIndex?: number
 }
 
 // pure aside from a call-time env read, so the Termux/desktop argument sets
@@ -290,7 +319,13 @@ export function buildDownloadArgs(opts: DownloadArgs): string[] {
       : []),
     // embed block — ffmpeg-gated, warn+skip when absent (REQ-011)
     ...(opts.embedMetadata && opts.ffmpeg.available ? ['--embed-metadata', '--embed-thumbnail'] : []),
-    '--no-playlist',
+    // playlist: per-entry window replaces --no-playlist (D8); unknown-count
+    // single run drops --no-playlist entirely (D13)
+    ...(opts.playlistIndex
+      ? ['--playlist-start', String(opts.playlistIndex), '--playlist-end', String(opts.playlistIndex)]
+      : opts.playlist
+        ? []
+        : ['--no-playlist']),
     '--no-warnings',
     '--newline',
     // --print implies --quiet, which suppresses progress bars and the

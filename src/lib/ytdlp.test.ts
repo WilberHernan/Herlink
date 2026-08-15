@@ -11,11 +11,14 @@ import {
   buildDownloadArgs,
   ensureYtDlp,
   findFfmpeg,
+  isPlaylistInfo,
+  playlistOption,
   probe,
   removePartials,
   type DownloadChoice,
   type VideoInfo,
 } from './ytdlp.js'
+import {playlistItems} from './queue.js'
 
 const PREFIX = '/data/data/com.termux/files/usr'
 const noop = () => {}
@@ -127,6 +130,48 @@ const VIDEO_INFO: VideoInfo = {
     {format_id: '3', acodec: 'mp4a', vcodec: 'none', abr: 128, ext: 'm4a'},
   ],
 }
+
+test('isPlaylistInfo() detects playlists via extractor_key, _type and playlist_id (D7)', () => {
+  // --no-playlist first-entry JSON keeps extractor_key "Youtube" — the
+  // playlist_id is the reliable signal (D7)
+  assert.equal(isPlaylistInfo({title: 'x', extractor_key: 'Youtube', playlist_id: 'PL123'}), true)
+  assert.equal(isPlaylistInfo({title: 'x', extractor_key: 'Youtube:playlist'}), true)
+  assert.equal(isPlaylistInfo({title: 'x', _type: 'playlist'}), true)
+})
+
+test('isPlaylistInfo() returns false for a plain single video', () => {
+  assert.equal(isPlaylistInfo({title: 'x'}), false)
+  assert.equal(isPlaylistInfo({title: 'x', extractor_key: 'Youtube'}), false)
+  assert.equal(isPlaylistInfo({title: 'x', _type: 'video'}), false)
+})
+
+test('playlistOption() labels the playlist choice with the count (REQ-018)', () => {
+  assert.deepEqual(playlistOption({title: 'x', playlist_id: 'PL123', playlist_count: 5}), {
+    label: 'descargar los 5 videos',
+    count: 5,
+  })
+  assert.equal(playlistOption({title: 'x'}), undefined, 'single videos get no playlist option')
+})
+
+test('playlistOption() falls back to a generic label when the count is unknown (D13)', () => {
+  assert.deepEqual(playlistOption({title: 'x', extractor_key: 'X:playlist'}), {
+    label: 'descargar todos los videos',
+    count: undefined,
+  })
+})
+
+test('playlistItems() expands a playlist url into per-entry items with 1-based indexes (D8)', () => {
+  assert.deepEqual(playlistItems('https://example.com/pl', 3), [
+    {url: 'https://example.com/pl', playlistIndex: 1},
+    {url: 'https://example.com/pl', playlistIndex: 2},
+    {url: 'https://example.com/pl', playlistIndex: 3},
+  ])
+  assert.deepEqual(playlistItems('https://example.com/pl', 1), [{url: 'https://example.com/pl', playlistIndex: 1}])
+})
+
+test('playlistItems() with a zero count yields no items (REQ-019)', () => {
+  assert.deepEqual(playlistItems('https://example.com/pl', 0), [])
+})
 
 test('bestChoice() returns the top video and audioChoice() the mp3 option', () => {
   const best = bestChoice(VIDEO_INFO)
@@ -573,6 +618,50 @@ test('buildDownloadArgs() pins the full block order: cookies, choice, resume, su
       '--embed-thumbnail',
       ...DESKTOP_TAIL,
     ])
+  } finally {
+    restoreTermux()
+  }
+})
+
+test('buildDownloadArgs() with a playlistIndex pins --playlist-start/end and omits --no-playlist (D8)', () => {
+  const restoreTermux = termuxEnv(false)
+  try {
+    const args = buildDownloadArgs({
+      url: 'https://example.com/pl',
+      choice,
+      outDir: path.join(os.homedir(), 'Downloads'),
+      ffmpeg: {available: false},
+      playlistIndex: 2,
+    })
+    // golden array — the playlist window replaces --no-playlist in place
+    assert.deepEqual(args, [
+      'https://example.com/pl',
+      '-f',
+      'bv*+ba/b',
+      '--playlist-start',
+      '2',
+      '--playlist-end',
+      '2',
+      ...DESKTOP_TAIL.slice(1),
+    ])
+  } finally {
+    restoreTermux()
+  }
+})
+
+test('buildDownloadArgs() in playlist mode without an index downloads the whole playlist in one run (D13)', () => {
+  const restoreTermux = termuxEnv(false)
+  try {
+    const args = buildDownloadArgs({
+      url: 'https://example.com/pl',
+      choice,
+      outDir: path.join(os.homedir(), 'Downloads'),
+      ffmpeg: {available: false},
+      playlist: true,
+    })
+    // D13: playlist_count unknown — single yt-dlp run, no --no-playlist and
+    // no per-entry window
+    assert.deepEqual(args, ['https://example.com/pl', '-f', 'bv*+ba/b', ...DESKTOP_TAIL.slice(1)])
   } finally {
     restoreTermux()
   }

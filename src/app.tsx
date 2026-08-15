@@ -24,6 +24,7 @@ import {
   buildChoices,
   ensureYtDlp,
   findFfmpeg,
+  playlistOption,
   type DownloadChoice,
   type DownloadProgress,
   type FfmpegStatus,
@@ -31,6 +32,10 @@ import {
 } from './lib/ytdlp.js'
 
 const ACTION_LABEL = 'bajar'
+
+// SelectInput sentinel for the "descargar los N videos" option (REQ-018) —
+// real choices are indexes into choices[], so -1 can never collide
+const PLAYLIST_CHOICE_VALUE = -1
 
 const choiceLabel = (choice: DownloadChoice) => `${choice.kind === 'audio' ? '♪ ' : '▶ '}${choice.label}`
 
@@ -193,11 +198,13 @@ function AppContent({
   const [platform, setPlatform] = useState<Platform>()
   const [info, setInfo] = useState<VideoInfo>()
   const [choices, setChoices] = useState<DownloadChoice[]>([])
+  // the "descargar los N videos" picker option, present only for playlists (REQ-018)
+  const [playlistChoice, setPlaylistChoice] = useState<{label: string; count?: number} | undefined>(undefined)
   const ytdlpRef = useRef('')
   const highlightRef = useRef(0) // choice under the cursor, for the ↵ hint click
   const abortRef = useRef<AbortController | undefined>(undefined)
   // resolves runQueue's per-item choiceFor promise once the picker answers
-  const pickRef = useRef<((choice: DownloadChoice | 'cancel') => void) | undefined>(undefined)
+  const pickRef = useRef<((choice: DownloadChoice | 'playlist' | 'cancel') => void) | undefined>(undefined)
   const [phase, setPhase] = useState<Phase>(
     initialUrls?.length ? {name: 'probing', status: 'preparando…'} : {name: 'input'},
   )
@@ -242,9 +249,10 @@ function AppContent({
               setPlatform(detectPlatform(urls[index]!))
               setPhase({name: 'probing', status: 'obteniendo info del video…'})
             },
-            choiceFor: (videoInfo): Promise<DownloadChoice | 'cancel'> => {
+            choiceFor: (videoInfo): Promise<DownloadChoice | 'playlist' | 'cancel'> => {
               setInfo(videoInfo)
               setChoices(buildChoices(videoInfo))
+              setPlaylistChoice(playlistOption(videoInfo))
               highlightRef.current = 0
               setPhase({name: 'picking'})
               // the picker answers via handlePick; esc resolves 'cancel' (REQ-017)
@@ -303,6 +311,7 @@ function AppContent({
     setPlatform(undefined)
     setInfo(undefined)
     setChoices([])
+    setPlaylistChoice(undefined)
     setPhase({name: 'input'})
   }, [])
 
@@ -344,6 +353,18 @@ function AppContent({
   const clipboardAccepted = Boolean(clipboardUrl) && urlInput === clipboardUrl
 
   const handlePick = (item: {value: number}) => {
+    if (item.value === PLAYLIST_CHOICE_VALUE) {
+      // "descargar los N videos" (REQ-018) — runQueue expands the probe into
+      // per-entry downloads; the synthetic choice only drives the header
+      pickRef.current?.('playlist')
+      pickRef.current = undefined
+      setPhase({
+        name: 'downloading',
+        choice: {label: playlistChoice?.label ?? 'descargar playlist', kind: 'video', args: []},
+        processing: false,
+      })
+      return
+    }
     const choice = choices[item.value]
     if (!choice) return
     pickRef.current?.(choice)
@@ -381,6 +402,12 @@ function AppContent({
   if (phase.name === 'picking') {
     for (const [index, choice] of choices.entries()) {
       clickTargets.push({match: choiceLabel(choice), action: () => handlePick({value: index})})
+    }
+    if (playlistChoice) {
+      clickTargets.push({
+        match: choiceLabel({kind: 'video', label: playlistChoice.label, args: []}),
+        action: () => handlePick({value: PLAYLIST_CHOICE_VALUE}),
+      })
     }
   }
   // done phase: no visible action — Enter returns to the start (see HINTS + useInput)
@@ -483,11 +510,23 @@ function AppContent({
             <SelectInput
               indicatorComponent={ChoiceIndicator}
               itemComponent={ChoiceItem}
-              items={choices.map((choice, index) => ({
-                key: String(index),
-                label: choiceLabel(choice),
-                value: index,
-              }))}
+              items={[
+                ...choices.map((choice, index) => ({
+                  key: String(index),
+                  label: choiceLabel(choice),
+                  value: index,
+                })),
+                // REQ-018: playlist option alongside the format choices
+                ...(playlistChoice
+                  ? [
+                      {
+                        key: 'playlist',
+                        label: choiceLabel({kind: 'video', label: playlistChoice.label, args: []}),
+                        value: PLAYLIST_CHOICE_VALUE,
+                      },
+                    ]
+                  : []),
+              ]}
               onSelect={handlePick}
               onHighlight={item => (highlightRef.current = item.value)}
             />

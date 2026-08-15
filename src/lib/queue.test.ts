@@ -220,6 +220,122 @@ test('runQueue retries with a fresh extraction when the cached-info download fai
   assert.equal(outcome.errors.length, 0)
 })
 
+test('runQueue threads item.playlistIndex into the download (D8)', async () => {
+  let seenIndex: number | undefined
+  let seenInfoJsonPath: string | undefined
+  const outcome = await runQueue(
+    [{url: 'https://example.com/pl', playlistIndex: 3}],
+    {ytdlp: 'yt-dlp', outDir: '/tmp/Downloads', ffmpeg: {available: false}, choiceFor: () => choice},
+    {
+      probe: async () => ({info: info(), infoJsonPath: '/tmp/info.json'}),
+      download: async (opts: DownloadArgs & {ytdlp: string}) => {
+        seenIndex = opts.playlistIndex
+        seenInfoJsonPath = opts.infoJsonPath
+        return '/tmp/Downloads/entry.mp4'
+      },
+    },
+  )
+  assert.equal(seenIndex, 3, 'playlistIndex must reach the download')
+  assert.equal(seenInfoJsonPath, undefined, 'playlist items must never reuse the probe infoJsonPath (REQ-019)')
+  assert.deepEqual(outcome.filepaths, ['/tmp/Downloads/entry.mp4'])
+})
+
+test('runQueue expands a playlist probe into per-entry downloads when the playlist choice is taken (REQ-019)', async () => {
+  const calls: string[] = []
+  const outcome = await runQueue(
+    [{url: 'https://example.com/pl'}],
+    {ytdlp: 'yt-dlp', outDir: '/tmp/Downloads', ffmpeg: {available: false}, choiceFor: () => 'playlist'},
+    {
+      probe: async () => ({
+        info: {title: 'pl', playlist_id: 'PL123', playlist_count: 3},
+        infoJsonPath: '/tmp/info.json',
+      }),
+      download: async (opts: DownloadArgs & {ytdlp: string}) => {
+        calls.push(`download:${opts.playlistIndex}`)
+        assert.equal(opts.playlist, true, 'per-entry downloads must be in playlist mode')
+        assert.equal(opts.infoJsonPath, undefined, 'each entry re-extracts — no --load-info-json (REQ-019)')
+        assert.equal(opts.choice.kind, 'video', 'entries download with the best-video choice (like --best)')
+        return `/tmp/Downloads/entry-${opts.playlistIndex}.mp4`
+      },
+    },
+  )
+  assert.deepEqual(calls, ['download:1', 'download:2', 'download:3'])
+  assert.deepEqual(outcome.filepaths, [
+    '/tmp/Downloads/entry-1.mp4',
+    '/tmp/Downloads/entry-2.mp4',
+    '/tmp/Downloads/entry-3.mp4',
+  ])
+  assert.equal(outcome.errors.length, 0)
+})
+
+test('runQueue surfaces a clear error and downloads nothing for a 0-entry playlist (REQ-019)', async () => {
+  let downloads = 0
+  const outcome = await runQueue(
+    [{url: 'https://example.com/pl'}],
+    {ytdlp: 'yt-dlp', outDir: '/tmp/Downloads', ffmpeg: {available: false}, choiceFor: () => 'playlist'},
+    {
+      probe: async () => ({
+        info: {title: 'pl', playlist_id: 'PL123', playlist_count: 0},
+        infoJsonPath: '/tmp/info.json',
+      }),
+      download: async () => {
+        downloads++
+        return '/tmp/Downloads/x.mp4'
+      },
+    },
+  )
+  assert.equal(downloads, 0, 'nothing must download for an empty playlist')
+  assert.equal(outcome.errors.length, 1)
+  assert.match(outcome.errors[0]!, /no tiene videos/)
+  assert.deepEqual(outcome.filepaths, [])
+})
+
+test('runQueue falls back to a single whole-playlist run when playlist_count is unknown (D13)', async () => {
+  let seen: DownloadArgs | undefined
+  const outcome = await runQueue(
+    [{url: 'https://example.com/pl'}],
+    {ytdlp: 'yt-dlp', outDir: '/tmp/Downloads', ffmpeg: {available: false}, choiceFor: () => 'playlist'},
+    {
+      probe: async () => ({
+        info: {title: 'pl', playlist_id: 'PL123'}, // no playlist_count
+        infoJsonPath: '/tmp/info.json',
+      }),
+      download: async (opts: DownloadArgs & {ytdlp: string}) => {
+        seen = opts
+        return '/tmp/Downloads/all.mp4'
+      },
+    },
+  )
+  assert.equal(seen?.playlist, true, 'D13 run must be in playlist mode (no --no-playlist)')
+  assert.equal(seen?.playlistIndex, undefined, 'unknown count → no per-entry window')
+  assert.equal(seen?.infoJsonPath, undefined, 'playlist items never reuse the probe infoJsonPath (REQ-019)')
+  assert.deepEqual(outcome.filepaths, ['/tmp/Downloads/all.mp4'])
+  assert.equal(outcome.errors.length, 0)
+})
+
+test('runQueue records a mid-playlist entry failure and continues with the remaining entries (REQ-019)', async () => {
+  const calls: string[] = []
+  const outcome = await runQueue(
+    [{url: 'https://example.com/pl'}],
+    {ytdlp: 'yt-dlp', outDir: '/tmp/Downloads', ffmpeg: {available: false}, choiceFor: () => 'playlist'},
+    {
+      probe: async () => ({
+        info: {title: 'pl', playlist_id: 'PL123', playlist_count: 3},
+        infoJsonPath: '/tmp/info.json',
+      }),
+      download: async (opts: DownloadArgs & {ytdlp: string}) => {
+        calls.push(`download:${opts.playlistIndex}`)
+        if (opts.playlistIndex === 2) throw new Error('entrada 2 rota')
+        return `/tmp/Downloads/entry-${opts.playlistIndex}.mp4`
+      },
+    },
+  )
+  assert.deepEqual(calls, ['download:1', 'download:2', 'download:3'])
+  assert.deepEqual(outcome.filepaths, ['/tmp/Downloads/entry-1.mp4', '/tmp/Downloads/entry-3.mp4'])
+  assert.equal(outcome.errors.length, 1)
+  assert.match(outcome.errors[0]!, /entrada 2 rota/)
+})
+
 test('runScriptable creates the outDir, downloads with the best choice, and prints the filepath', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'herlink-out-'))
   const log = mock.method(console, 'log', () => {})
