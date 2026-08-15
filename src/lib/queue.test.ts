@@ -422,6 +422,34 @@ test('runQueue threads resume, cookies, embedMetadata and subs into probe and do
   assert.equal(seenDownload?.subs, 'es,en', 'download must receive subs')
 })
 
+test('runQueue threads noUpdate into probe and download (REQ-022)', async () => {
+  let seenProbeNoUpdate: boolean | undefined
+  let seenDownloadNoUpdate: boolean | undefined
+  const outcome = await runQueue(
+    [{url: 'https://example.com/v'}],
+    {
+      ytdlp: 'yt-dlp',
+      outDir: '/tmp/Downloads',
+      ffmpeg: {available: false},
+      noUpdate: true,
+      choiceFor: () => choice,
+    },
+    {
+      probe: async (_ytdlp, _url, _signal, _cookies, noUpdate) => {
+        seenProbeNoUpdate = noUpdate
+        return {info: info(), infoJsonPath: '/tmp/info.json'}
+      },
+      download: async (opts: DownloadArgs & {ytdlp: string}) => {
+        seenDownloadNoUpdate = opts.noUpdate
+        return '/tmp/Downloads/video.mp4'
+      },
+    },
+  )
+  assert.equal(outcome.filepaths.length, 1)
+  assert.equal(seenProbeNoUpdate, true, 'probe must receive noUpdate for stale-warning suppression')
+  assert.equal(seenDownloadNoUpdate, true, 'download must receive noUpdate')
+})
+
 test('runScriptable threads resume, cookies, embedMetadata and subs into the queue driver', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'herlink-out-'))
   const log = mock.method(console, 'log', () => {})

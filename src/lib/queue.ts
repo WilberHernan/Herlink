@@ -39,6 +39,8 @@ export type QueueRunOptions = {
   cookies?: string
   embedMetadata?: boolean
   subs?: string
+  /** --no-update into probe/download argv: suppress yt-dlp's stale warning (REQ-022). */
+  noUpdate?: boolean
   // TTY defers to the picker (async promise resolved on select), scriptable
   // resolves immediately; 'playlist' takes the "descargar los N videos"
   // choice (REQ-018) and 'cancel' aborts the queue
@@ -84,7 +86,7 @@ export async function runQueue(
     let info: VideoInfo
     let infoJsonPath: string | undefined
     try {
-      const result = await doProbe(opts.ytdlp, item.url, opts.signal, opts.cookies)
+      const result = await doProbe(opts.ytdlp, item.url, opts.signal, opts.cookies, opts.noUpdate)
       info = result.info
       infoJsonPath = result.infoJsonPath
     } catch (error) {
@@ -136,6 +138,7 @@ export async function runQueue(
         cookies: opts.cookies,
         embedMetadata: opts.embedMetadata,
         subs: opts.subs,
+        noUpdate: opts.noUpdate,
       }
       if (typeof count === 'number' && count > 0) {
         for (let i = 1; i <= count; i++) {
@@ -179,6 +182,7 @@ export async function runQueue(
       cookies: opts.cookies,
       embedMetadata: opts.embedMetadata,
       subs: opts.subs,
+      noUpdate: opts.noUpdate,
     }
     try {
       // playlist items (playlistIndex) always re-extract — never reuse the
@@ -225,6 +229,8 @@ export type ScriptableOptions = {
   cookies?: string
   embedMetadata?: boolean
   subs?: string
+  /** --no-update into probe/download argv (REQ-022). */
+  noUpdate?: boolean
   signal?: AbortSignal
 }
 
@@ -253,6 +259,7 @@ export async function runScriptable(
       cookies: opts.cookies,
       embedMetadata: opts.embedMetadata,
       subs: opts.subs,
+      noUpdate: opts.noUpdate,
       signal: opts.signal,
       choiceFor: info => (opts.scriptable === 'mp3' ? audioChoice(info) : bestChoice(info)),
       onStatus: message => process.stderr.write(message + '\n'),

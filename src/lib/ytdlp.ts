@@ -8,7 +8,12 @@ import {pipeline} from 'node:stream/promises'
 import {formatBytes} from './format.js'
 import {FFMPEG_TERMUX_HINT, isSharedStorageDir, isTermux, YTDLP_TERMUX_ERROR} from './termux.js'
 
-const HERLINK_DIR = path.join(os.homedir(), '.herlink', 'bin')
+// read at call time, not module load — tests flip $HOME between cases and a
+// cached const would freeze the first answer forever (termux.ts convention)
+function herlinkBinDir(): string {
+  return path.join(os.homedir(), '.herlink', 'bin')
+}
+
 const RELEASE_BASE = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download'
 
 function ytDlpAssetName(): string {
@@ -44,11 +49,11 @@ export async function ensureYtDlp(onStatus: (message: string) => void, signal?: 
   // PATH-only there, so fail with the install command instead of downloading
   if (isTermux()) throw new Error(YTDLP_TERMUX_ERROR)
 
-  const local = path.join(HERLINK_DIR, process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp')
+  const local = path.join(herlinkBinDir(), process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp')
   if (await commandWorks(local, ['--version'])) return local
 
   onStatus('primera ejecución: descargando yt-dlp…')
-  await fs.mkdir(HERLINK_DIR, {recursive: true})
+  await fs.mkdir(herlinkBinDir(), {recursive: true})
 
   const url = `${RELEASE_BASE}/${ytDlpAssetName()}`
   const response = await fetch(url, {signal})
@@ -61,6 +66,75 @@ export async function ensureYtDlp(onStatus: (message: string) => void, signal?: 
   await fs.chmod(tmp, 0o755)
   await fs.rename(tmp, local)
   return local
+}
+
+export type SelfUpdateResult = {
+  /** true when the -U check ran and the binary state is known (current or updated). */
+  checked: boolean
+  /** New version when the self-update actually replaced the bundled binary. */
+  updated?: string
+  /** Why there is no definitive answer: not the bundled copy, Termux pkg, or the -U run failed. */
+  reason?: 'not-bundled' | 'termux' | 'failed'
+}
+
+// the -U run must never hang startup (REQ-020/021): a stuck update is killed
+// after 30s and treated as a silent failure
+const SELF_UPDATE_TIMEOUT_MS = 30_000
+
+// a pip/wheel install cannot self-update — yt-dlp says so and exits 0 on some
+// versions, so the message is the reliable signal (never a crash)
+const PACKAGE_MANAGER_RE = /pip|pypi|package manager/i
+
+/** True only for the bundled standalone copy under ~/.herlink/bin (D11, REQ-020). */
+export function isBundledBinary(binary: string): boolean {
+  return path.dirname(binary) === herlinkBinDir()
+}
+
+/**
+ * Silent startup self-update (D11): runs `yt-dlp -U` ONLY for the bundled
+ * ~/.herlink/bin copy — never for a PATH `yt-dlp` or a Termux pkg install
+ * (REQ-020). Never throws and never blocks startup: every failure path falls
+ * back to {checked: false, reason: 'failed'}. onStatus fires only when the
+ * binary was actually updated (silent otherwise).
+ */
+export async function maybeSelfUpdate(
+  binary: string,
+  onStatus?: (message: string) => void,
+): Promise<SelfUpdateResult> {
+  if (isTermux()) return {checked: false, reason: 'termux'}
+  if (!isBundledBinary(binary)) return {checked: false, reason: 'not-bundled'}
+
+  let stdout = ''
+  let stderr = ''
+  let code: number | null
+  try {
+    const result = await new Promise<{code: number | null; stdout: string; stderr: string}>((resolve, reject) => {
+      let child: ChildProcess
+      try {
+        child = spawn(binary, ['-U'], {timeout: SELF_UPDATE_TIMEOUT_MS})
+      } catch (error) {
+        reject(error)
+        return
+      }
+      child.stdout?.on('data', chunk => (stdout += chunk))
+      child.stderr?.on('data', chunk => (stderr += chunk))
+      child.on('error', reject)
+      child.on('close', code => resolve({code, stdout, stderr}))
+    })
+    code = result.code
+  } catch {
+    // spawn error or timeout — silent fallback, never crash startup (REQ-020)
+    return {checked: false, reason: 'failed'}
+  }
+  if (code !== 0) return {checked: false, reason: 'failed'}
+  if (PACKAGE_MANAGER_RE.test(stdout + stderr)) return {checked: false, reason: 'failed'}
+  const updated = /Updated yt-dlp to (.+)/.exec(stdout)?.[1]
+  if (updated) {
+    onStatus?.(`yt-dlp actualizado a ${updated}`)
+    return {checked: true, updated}
+  }
+  // "yt-dlp is up to date (X)" or unrecognized exit-0 output — no-op (REQ-021)
+  return {checked: true}
 }
 
 /**
@@ -159,9 +233,11 @@ export async function probe(
   url: string,
   signal?: AbortSignal,
   cookies?: string,
+  noUpdate?: boolean,
 ): Promise<ProbeResult> {
   const argv = ['-J', '--no-playlist', '--no-warnings']
   if (cookies) argv.push('--cookies', cookies)
+  if (noUpdate) argv.push('--no-update')
   argv.push(url)
   const stdout = await new Promise<string>((resolve, reject) => {
     const child = spawn(ytdlp, argv, {signal})
@@ -303,6 +379,9 @@ export type DownloadArgs = {
    * entry window --playlist-start/end N scopes the run to one entry (D8). */
   playlist?: boolean
   playlistIndex?: number
+  /** --no-update: suppress yt-dlp's 90-day stale warning when herlink manages
+   * freshness or the user asked for it (REQ-022). */
+  noUpdate?: boolean
 }
 
 // pure aside from a call-time env read, so the Termux/desktop argument sets
@@ -319,6 +398,8 @@ export function buildDownloadArgs(opts: DownloadArgs): string[] {
       : []),
     // embed block — ffmpeg-gated, warn+skip when absent (REQ-011)
     ...(opts.embedMetadata && opts.ffmpeg.available ? ['--embed-metadata', '--embed-thumbnail'] : []),
+    // --no-update: suppress the stale-binary warning (REQ-022)
+    ...(opts.noUpdate ? ['--no-update'] : []),
     // playlist: per-entry window replaces --no-playlist (D8); unknown-count
     // single run drops --no-playlist entirely (D13)
     ...(opts.playlistIndex

@@ -8,7 +8,7 @@ import {readClipboard} from './lib/clipboard.js'
 import {isProbablyUrl} from './lib/platforms.js'
 import {runScriptable} from './lib/queue.js'
 import {resolveOutDir} from './lib/termux.js'
-import {ensureYtDlp} from './lib/ytdlp.js'
+import {ensureYtDlp, isBundledBinary, maybeSelfUpdate} from './lib/ytdlp.js'
 
 // read at runtime from the shipped package.json so npm version bumps
 // can't drift from a hardcoded constant
@@ -62,6 +62,10 @@ const isTTY = Boolean(process.stdout.isTTY)
 if (args.scriptable && !isTTY) {
   try {
     const ytdlp = await ensureYtDlp(status => process.stderr.write(status + '\n'))
+    // bundled-only silent self-update (D11, REQ-020/021); --no-update opt-out
+    if (!args.noUpdate && isBundledBinary(ytdlp)) {
+      await maybeSelfUpdate(ytdlp, status => process.stderr.write(status + '\n'))
+    }
     const outDir = args.outDir ?? (await resolveOutDir()).dir
     const outcome = await runScriptable(
       ytdlp,
@@ -71,6 +75,7 @@ if (args.scriptable && !isTTY) {
         scriptable: args.scriptable,
         embedMetadata: args.embedMetadata,
         subs: args.subs,
+        noUpdate: args.noUpdate,
       },
     )
     // runScriptable already printed filepaths (stdout) and errors (stderr)
@@ -118,6 +123,7 @@ const {waitUntilExit} = render(
     cookies={args.cookies}
     embedMetadata={args.embedMetadata}
     subs={args.subs}
+    noUpdate={args.noUpdate}
     onOutcome={result => (outcome = result)}
   />,
   // keep a copy of every frame so clicks can be hit-tested against it

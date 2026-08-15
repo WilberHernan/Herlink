@@ -11,7 +11,9 @@ import {
   buildDownloadArgs,
   ensureYtDlp,
   findFfmpeg,
+  isBundledBinary,
   isPlaylistInfo,
+  maybeSelfUpdate,
   playlistOption,
   probe,
   removePartials,
@@ -664,5 +666,215 @@ test('buildDownloadArgs() in playlist mode without an index downloads the whole 
     assert.deepEqual(args, ['https://example.com/pl', '-f', 'bv*+ba/b', ...DESKTOP_TAIL.slice(1)])
   } finally {
     restoreTermux()
+  }
+})
+
+test('isBundledBinary() identifies only the ~/.herlink/bin copy (REQ-020)', () => {
+  // the bundled standalone binary lives under ~/.herlink/bin (call-time HOME
+  // read, termux.ts style)
+  assert.equal(isBundledBinary(path.join(os.homedir(), '.herlink', 'bin', 'yt-dlp')), true)
+  assert.equal(isBundledBinary(path.join(os.homedir(), '.herlink', 'bin', 'yt-dlp.exe')), true, 'win32 name')
+  assert.equal(isBundledBinary('yt-dlp'), false, 'PATH resolution result is never bundled')
+  assert.equal(isBundledBinary('/usr/local/bin/yt-dlp'), false, 'a user-managed copy is not bundled')
+})
+
+// Plants a fake yt-dlp at <tmpHome>/.herlink/bin/yt-dlp and points $HOME at
+// <tmpHome> so the bundled-path guard resolves to the fake (call-time read).
+// Forces desktop env — Termux installs must never self-update (REQ-020).
+// Returns a restore fn that always runs in finally.
+function withFakeBundledBinary(script: string): {binary: string; restore: () => void} {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'herlink-home-'))
+  const binDir = path.join(home, '.herlink', 'bin')
+  fs.mkdirSync(binDir, {recursive: true})
+  const binary = path.join(binDir, 'yt-dlp')
+  fs.writeFileSync(binary, script, {mode: 0o755})
+  const prevHome = process.env.HOME
+  process.env.HOME = home
+  const restoreTermux = termuxEnv(false)
+  return {
+    binary,
+    restore: () => {
+      restoreTermux()
+      if (prevHome === undefined) delete process.env.HOME
+      else process.env.HOME = prevHome
+      fs.rmSync(home, {recursive: true, force: true})
+    },
+  }
+}
+
+test('maybeSelfUpdate() skips a PATH yt-dlp without running -U (REQ-020)', async () => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'herlink-bin-'))
+  const argsOut = path.join(bin, 'args.txt')
+  try {
+    fs.writeFileSync(
+      path.join(bin, 'yt-dlp'),
+      '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$FAKE_ARGS_OUT"\necho "yt-dlp is up to date (x)"\nexit 0\n',
+      {mode: 0o755},
+    )
+    const prev = process.env.FAKE_ARGS_OUT
+    process.env.FAKE_ARGS_OUT = argsOut
+    const restorePath = withPath(bin)
+    const restoreTermux = termuxEnv(false)
+    try {
+      const result = await maybeSelfUpdate('yt-dlp')
+      assert.deepEqual(result, {checked: false, reason: 'not-bundled'})
+      assert.equal(fs.existsSync(argsOut), false, '-U must never run for a PATH binary')
+    } finally {
+      restoreTermux()
+      restorePath()
+      if (prev === undefined) delete process.env.FAKE_ARGS_OUT
+      else process.env.FAKE_ARGS_OUT = prev
+    }
+  } finally {
+    fs.rmSync(bin, {recursive: true, force: true})
+  }
+})
+
+test('maybeSelfUpdate() skips a Termux pkg install without running -U (REQ-020)', async () => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'herlink-bin-'))
+  const argsOut = path.join(bin, 'args.txt')
+  try {
+    fs.writeFileSync(
+      path.join(bin, 'yt-dlp'),
+      '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$FAKE_ARGS_OUT"\necho "yt-dlp is up to date (x)"\nexit 0\n',
+      {mode: 0o755},
+    )
+    const prev = process.env.FAKE_ARGS_OUT
+    process.env.FAKE_ARGS_OUT = argsOut
+    const restorePath = withPath(bin)
+    const restoreTermux = termuxEnv(true)
+    try {
+      const result = await maybeSelfUpdate('yt-dlp')
+      assert.deepEqual(result, {checked: false, reason: 'termux'})
+      assert.equal(fs.existsSync(argsOut), false, '-U must never run for a Termux pkg install')
+    } finally {
+      restoreTermux()
+      restorePath()
+      if (prev === undefined) delete process.env.FAKE_ARGS_OUT
+      else process.env.FAKE_ARGS_OUT = prev
+    }
+  } finally {
+    fs.rmSync(bin, {recursive: true, force: true})
+  }
+})
+
+test('maybeSelfUpdate() reports checked when the bundled binary is up to date, silently (REQ-021)', async () => {
+  const fake = withFakeBundledBinary('#!/bin/sh\necho "yt-dlp is up to date (2026.01.01)"\nexit 0\n')
+  const statuses: string[] = []
+  try {
+    const result = await maybeSelfUpdate(fake.binary, status => statuses.push(status))
+    assert.deepEqual(result, {checked: true})
+    assert.equal(statuses.length, 0, 'up to date must stay silent')
+  } finally {
+    fake.restore()
+  }
+})
+
+test('maybeSelfUpdate() reports the new version and emits status when updated (REQ-021)', async () => {
+  const fake = withFakeBundledBinary('#!/bin/sh\necho "Updated yt-dlp to 2026.08.10"\nexit 0\n')
+  const statuses: string[] = []
+  try {
+    const result = await maybeSelfUpdate(fake.binary, status => statuses.push(status))
+    assert.deepEqual(result, {checked: true, updated: '2026.08.10'})
+    assert.equal(statuses.length, 1, 'the update status must surface once')
+    assert.match(statuses[0]!, /2026\.08\.10/)
+  } finally {
+    fake.restore()
+  }
+})
+
+test('maybeSelfUpdate() treats a non-zero exit as a silent failure (REQ-020)', async () => {
+  const fake = withFakeBundledBinary('#!/bin/sh\necho "ERROR: network is down"\nexit 1\n')
+  const statuses: string[] = []
+  try {
+    const result = await maybeSelfUpdate(fake.binary, status => statuses.push(status))
+    assert.deepEqual(result, {checked: false, reason: 'failed'})
+    assert.equal(statuses.length, 0, 'a failed update must stay silent')
+  } finally {
+    fake.restore()
+  }
+})
+
+test('maybeSelfUpdate() treats a pip-installed binary as a silent failure', async () => {
+  // a pip/wheel install cannot self-update — yt-dlp says so and exits 0;
+  // the message is the reliable signal, never a crash
+  const fake = withFakeBundledBinary(
+    '#!/bin/sh\necho "It looks like you installed yt-dlp with a package manager, please use that to update"\nexit 0\n',
+  )
+  const statuses: string[] = []
+  try {
+    const result = await maybeSelfUpdate(fake.binary, status => statuses.push(status))
+    assert.deepEqual(result, {checked: false, reason: 'failed'})
+    assert.equal(statuses.length, 0)
+  } finally {
+    fake.restore()
+  }
+})
+
+test('maybeSelfUpdate() never throws when the bundled binary is missing (REQ-020)', async () => {
+  // bundled path guard passes on the path string, but the file does not exist
+  // → spawn error must fall back silently, never crash startup
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'herlink-home-'))
+  const prevHome = process.env.HOME
+  process.env.HOME = home
+  const restoreTermux = termuxEnv(false)
+  try {
+    const result = await maybeSelfUpdate(path.join(home, '.herlink', 'bin', 'yt-dlp'))
+    assert.deepEqual(result, {checked: false, reason: 'failed'})
+  } finally {
+    restoreTermux()
+    if (prevHome === undefined) delete process.env.HOME
+    else process.env.HOME = prevHome
+    fs.rmSync(home, {recursive: true, force: true})
+  }
+})
+
+test('buildDownloadArgs() adds --no-update after the choice args when requested (REQ-022)', () => {
+  const restoreTermux = termuxEnv(false)
+  try {
+    const args = buildDownloadArgs({
+      url: 'https://example.com/v',
+      choice,
+      outDir: path.join(os.homedir(), 'Downloads'),
+      ffmpeg: {available: false},
+      noUpdate: true,
+    })
+    // golden array — --no-update lands between choice.args and the tail,
+    // suppressing yt-dlp's 90-day stale warning (REQ-022)
+    assert.deepEqual(args, ['https://example.com/v', '-f', 'bv*+ba/b', '--no-update', ...DESKTOP_TAIL])
+  } finally {
+    restoreTermux()
+  }
+})
+
+test('probe() passes --no-update to the yt-dlp argv (REQ-022)', async () => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'herlink-bin-'))
+  const argsOut = path.join(bin, 'args.txt')
+  try {
+    fs.writeFileSync(
+      path.join(bin, 'fake-ytdlp'),
+      '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$FAKE_ARGS_OUT"\nprintf \'{"title":"fake"}\'\n',
+      {mode: 0o755},
+    )
+    const prev = process.env.FAKE_ARGS_OUT
+    process.env.FAKE_ARGS_OUT = argsOut
+    try {
+      const fake = path.join(bin, 'fake-ytdlp')
+      const withFlag = await probe(fake, 'https://example.com/v', undefined, undefined, true)
+      const argv = fs.readFileSync(argsOut, 'utf8').trim().split('\n')
+      assert.ok(argv.includes('--no-update'), 'probe must carry --no-update when requested')
+      assert.equal(argv.at(-1), 'https://example.com/v', 'the url must stay the last argv element')
+      await fs.promises.rm(withFlag.infoJsonPath, {force: true})
+
+      const withoutFlag = await probe(fake, 'https://example.com/v')
+      const plainArgv = fs.readFileSync(argsOut, 'utf8').trim().split('\n')
+      assert.ok(!plainArgv.includes('--no-update'), 'no --no-update without the flag')
+      await fs.promises.rm(withoutFlag.infoJsonPath, {force: true})
+    } finally {
+      if (prev === undefined) delete process.env.FAKE_ARGS_OUT
+      else process.env.FAKE_ARGS_OUT = prev
+    }
+  } finally {
+    fs.rmSync(bin, {recursive: true, force: true})
   }
 })

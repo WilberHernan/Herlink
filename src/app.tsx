@@ -24,6 +24,8 @@ import {
   buildChoices,
   ensureYtDlp,
   findFfmpeg,
+  isBundledBinary,
+  maybeSelfUpdate,
   playlistOption,
   type DownloadChoice,
   type DownloadProgress,
@@ -147,6 +149,7 @@ type AppProps = {
   cookies?: string
   embedMetadata?: boolean
   subs?: string
+  noUpdate?: boolean
   onOutcome: (outcome: Outcome) => void
 }
 
@@ -171,6 +174,7 @@ function AppContent({
   cookies,
   embedMetadata,
   subs,
+  noUpdate,
   onOutcome,
   cycleTheme,
 }: {
@@ -181,6 +185,7 @@ function AppContent({
   cookies?: string
   embedMetadata?: boolean
   subs?: string
+  noUpdate?: boolean
   onOutcome: (outcome: Outcome) => void
   cycleTheme: () => void
 }) {
@@ -225,6 +230,11 @@ function AppContent({
         const ytdlp =
           ytdlpRef.current ||
           (await ensureYtDlp(status => setPhase({name: 'probing', status}), controller.signal))
+        // bundled-only silent self-update, once per run (D11, REQ-020/021);
+        // --no-update opts out; failure never blocks startup
+        if (!ytdlpRef.current && !noUpdate && isBundledBinary(ytdlp)) {
+          await maybeSelfUpdate(ytdlp, status => setPhase({name: 'probing', status}))
+        }
         ytdlpRef.current = ytdlp
         if (controller.signal.aborted) return
         setPhase({name: 'probing', status: 'obteniendo info del video…'})
@@ -242,6 +252,7 @@ function AppContent({
             cookies,
             embedMetadata,
             subs,
+            noUpdate,
             signal: controller.signal,
             onItem: index => {
               setQueueIndex(index)
