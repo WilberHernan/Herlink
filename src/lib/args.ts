@@ -39,11 +39,11 @@ export async function parseArgs(args: string[]): Promise<CliArgs> {
     } else if (arg === '--theme') {
       const value = args[++index]
       if (!value) return {...result, error: '--theme necesita un valor: auto, light o dark'}
-      if (!isThemeMode(value)) return {...result, error: `tema desconocido “${value}” — usa auto, light o dark`}
+      if (!isThemeMode(value)) return {...result, error: `Tema desconocido “${value}” — usa auto, light o dark`}
       result.themeMode = value
     } else if (arg.startsWith('--theme=')) {
       const value = arg.slice('--theme='.length)
-      if (!isThemeMode(value)) return {...result, error: `tema desconocido “${value}” — usa auto, light o dark`}
+      if (!isThemeMode(value)) return {...result, error: `Tema desconocido “${value}” — usa auto, light o dark`}
       result.themeMode = value
     } else if (arg === '--best' || arg === '--mp3') {
       const kind = arg === '--best' ? 'best' : 'mp3'
@@ -79,7 +79,7 @@ export async function parseArgs(args: string[]): Promise<CliArgs> {
     } else if (arg === '--no-update') {
       result.noUpdate = true
     } else if (arg.startsWith('-')) {
-      return {...result, error: `opción desconocida “${arg}”`}
+      return {...result, error: `Opción desconocida “${arg}”`}
     } else if (isProbablyUrl(arg)) {
       result.urls.push(arg)
     } else {
@@ -95,7 +95,7 @@ export async function parseArgs(args: string[]): Promise<CliArgs> {
     try {
       content = await fs.readFile(result.file, 'utf8')
     } catch {
-      return {...result, error: `el archivo “${result.file}” no existe o no es legible`}
+      return {...result, error: `El archivo “${result.file}” no existe o no es legible`}
     }
     const fromFile = content
       .split('\n')
@@ -116,7 +116,7 @@ export async function parseArgs(args: string[]): Promise<CliArgs> {
     try {
       await fs.access(result.cookies, fs.constants.R_OK)
     } catch {
-      return {...result, error: `el archivo de cookies “${result.cookies}” no existe o no es legible`}
+      return {...result, error: `El archivo de cookies “${result.cookies}” no existe o no es legible`}
     }
   }
   return result

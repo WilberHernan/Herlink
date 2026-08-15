@@ -43,8 +43,8 @@ test('collects multiple positional urls in order', async () => {
 
 test('rejects missing, invalid, and unknown options', async () => {
   assert.match((await parseArgs(['--theme'])).error ?? '', /necesita un valor/)
-  assert.match((await parseArgs(['--theme', 'sepia'])).error ?? '', /tema desconocido/)
-  assert.match((await parseArgs(['--wat'])).error ?? '', /opción desconocida/)
+  assert.match((await parseArgs(['--theme', 'sepia'])).error ?? '', /Tema desconocido/)
+  assert.match((await parseArgs(['--wat'])).error ?? '', /Opción desconocida/)
 })
 
 test('rejects a positional that is not a url, naming it (REQ-015)', async () => {

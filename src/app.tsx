@@ -358,7 +358,7 @@ function AppContent({
   const handleUrlSubmit = (value: string) => {
     const trimmed = value.trim()
     if (!isProbablyUrl(trimmed)) {
-      setPhase({name: 'input', warning: 'eso no parece un enlace — pega una url completa'})
+      setPhase({name: 'input', warning: 'Eso no parece un enlace — pega una url completa'})
       return
     }
     void startQueue([trimmed])
@@ -483,7 +483,7 @@ function AppContent({
           {phase.warning ? (
             <Text color={theme.warning}>✗ {phase.warning}</Text>
           ) : clipboardOffered ? (
-            <Text color={theme.muted}>hay un enlace en tu portapapeles — ⇥ para pegarlo</Text>
+            <Text color={theme.muted}>Hay un enlace en tu portapapeles — ⇥ para pegarlo</Text>
           ) : clipboardAccepted ? (
             <Text color={theme.muted}>desde tu portapapeles — ↵ para bajarlo</Text>
           ) : null}
@@ -595,7 +595,7 @@ function AppContent({
                   <Spinner type="dots" />
                 </Text>
                 <Text color={theme.muted}>
-                  {phase.refreshing ? ' enlace expirado — obteniendo uno nuevo…' : ' comenzando descarga…'}
+                  {phase.refreshing ? ' Enlace expirado — obteniendo uno nuevo…' : ' Comenzando descarga…'}
                 </Text>
               </Text>
             </>
@@ -616,11 +616,11 @@ function AppContent({
             <Text color={theme.muted}>
               {phase.cancelled
                 ? phase.filepaths.length > 0
-                  ? 'se guardaron los archivos ya descargados:'
-                  : 'no se descargó ningún archivo'
+                  ? 'Se guardaron los archivos ya descargados:'
+                  : 'No se descargó ningún archivo'
                 : phase.filepaths.length > 1
-                  ? 'están en:'
-                  : 'tu archivo está en:'}
+                  ? 'Están en:'
+                  : 'Tu archivo está en:'}
             </Text>
           </Text>
           <Gap />

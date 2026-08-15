@@ -180,7 +180,7 @@ export async function findFfmpeg(): Promise<FfmpegStatus> {
 // ffmpeg, the desktop message explains why their flags were dropped
 function warnFfmpegMissing(): void {
   process.stderr.write(
-    (isTermux() ? FFMPEG_TERMUX_HINT : 'ffmpeg no está disponible — se omiten las opciones de incrustado') + '\n',
+    (isTermux() ? FFMPEG_TERMUX_HINT : 'Ffmpeg no está disponible — se omiten las opciones de incrustado') + '\n',
   )
 }
 

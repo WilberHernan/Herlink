@@ -476,7 +476,7 @@ test('buildDownloadArgs() skips embed flags without ffmpeg and warns on stderr (
     assert.ok(!args.includes('--embed-metadata'), 'embed flags must be skipped, not passed to yt-dlp')
     assert.ok(!args.includes('--embed-thumbnail'))
     assert.equal(writeMock.mock.callCount(), 1)
-    assert.match(String(writeMock.mock.calls[0]?.arguments[0]), /ffmpeg/)
+    assert.match(String(writeMock.mock.calls[0]?.arguments[0]), /Ffmpeg/)
   } finally {
     writeMock.mock.restore()
     restoreTermux()
@@ -565,7 +565,7 @@ test('buildDownloadArgs() omits --embed-subs without ffmpeg and warns (REQ-013)'
     assert.equal(args[args.indexOf('--sub-langs') + 1], 'es')
     assert.ok(!args.includes('--embed-subs'))
     assert.equal(writeMock.mock.callCount(), 1)
-    assert.match(String(writeMock.mock.calls[0]?.arguments[0]), /ffmpeg/)
+    assert.match(String(writeMock.mock.calls[0]?.arguments[0]), /Ffmpeg/)
   } finally {
     writeMock.mock.restore()
     restoreTermux()
