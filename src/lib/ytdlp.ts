@@ -64,26 +64,41 @@ export async function ensureYtDlp(onStatus: (message: string) => void, signal?: 
 }
 
 /**
- * Find ffmpeg for stream merging / mp3 extraction: system install first,
- * ffmpeg-static as fallback. Returns undefined if neither exists — yt-dlp
- * still works for single-file formats without it.
+ * Tri-state ffmpeg status (D4): available with no location = on PATH (yt-dlp
+ * finds it itself), available with location = ffmpeg-static fallback, absent =
+ * embed/merge features must warn-skip instead of failing (REQ-011/013).
  */
-export async function findFfmpeg(): Promise<string | undefined> {
-  if (await commandWorks('ffmpeg', ['-version'])) return undefined // on PATH, yt-dlp finds it itself
+export type FfmpegStatus = {available: boolean; location?: string}
+
+/**
+ * Find ffmpeg for stream merging / mp3 extraction: system install first,
+ * ffmpeg-static as fallback. yt-dlp still works for single-file formats
+ * without it.
+ */
+export async function findFfmpeg(): Promise<FfmpegStatus> {
+  if (await commandWorks('ffmpeg', ['-version'])) return {available: true} // on PATH, yt-dlp finds it itself
   // no ffmpeg-static fallback on Termux — hint instead of silently failing the
   // merge/extract step later
   if (isTermux()) {
     process.stderr.write(FFMPEG_TERMUX_HINT + '\n')
-    return undefined
+    return {available: false}
   }
   try {
     const mod = await import('ffmpeg-static')
     const ffmpegPath = (mod.default ?? mod) as unknown as string | null
-    if (ffmpegPath && (await commandWorks(ffmpegPath, ['-version']))) return ffmpegPath
+    if (ffmpegPath && (await commandWorks(ffmpegPath, ['-version']))) return {available: true, location: ffmpegPath}
   } catch {
     // ffmpeg-static not installed or unsupported platform
   }
-  return undefined
+  return {available: false}
+}
+
+// warn-skip, never fail (REQ-011): the Termux hint tells the user how to get
+// ffmpeg, the desktop message explains why their flags were dropped
+function warnFfmpegMissing(): void {
+  process.stderr.write(
+    (isTermux() ? FFMPEG_TERMUX_HINT : 'ffmpeg no está disponible — se omiten las opciones de incrustado') + '\n',
+  )
 }
 
 export type VideoInfo = {
@@ -250,11 +265,15 @@ export type DownloadArgs = {
   infoJsonPath?: string
   choice: DownloadChoice
   outDir: string
-  ffmpegLocation?: string
+  ffmpeg: FfmpegStatus
   /** --continue: resume a partial download instead of restarting (REQ-005). */
   resume?: boolean
   /** Netscape cookies file, passed to yt-dlp for auth (REQ-007). */
   cookies?: string
+  /** --embed-metadata --embed-thumbnail, ffmpeg-gated (REQ-009/011); resolved off-switch wins at parse (D3). */
+  embedMetadata?: boolean
+  /** Subtitle langs, '' = all; video kind only (REQ-012/014). */
+  subs?: string
 }
 
 // pure aside from a call-time env read, so the Termux/desktop argument sets
@@ -265,6 +284,12 @@ export function buildDownloadArgs(opts: DownloadArgs): string[] {
     ...(opts.cookies ? ['--cookies', opts.cookies] : []),
     ...opts.choice.args,
     ...(opts.resume ? ['--continue'] : []),
+    // subs block — video kind only (REQ-014); --embed-subs gated on ffmpeg (REQ-013)
+    ...(opts.subs !== undefined && opts.choice.kind === 'video'
+      ? ['--write-subs', ...(opts.subs ? ['--sub-langs', opts.subs] : []), ...(opts.ffmpeg.available ? ['--embed-subs'] : [])]
+      : []),
+    // embed block — ffmpeg-gated, warn+skip when absent (REQ-011)
+    ...(opts.embedMetadata && opts.ffmpeg.available ? ['--embed-metadata', '--embed-thumbnail'] : []),
     '--no-playlist',
     '--no-warnings',
     '--newline',
@@ -280,10 +305,13 @@ export function buildDownloadArgs(opts: DownloadArgs): string[] {
     '-o',
     path.join(opts.outDir, '%(title).60s.%(ext)s'),
   ]
+  // warn-skip instead of failing: embed flags requested but ffmpeg absent
+  if (opts.embedMetadata && !opts.ffmpeg.available) warnFfmpegMissing()
+  if (opts.subs !== undefined && opts.choice.kind === 'video' && !opts.ffmpeg.available) warnFfmpegMissing()
   // FAT-forbidden chars in titles (": ? * " < > |") break downloads into
   // shared storage — restrict-filenames makes yt-dlp sanitize them away
   if (isTermux() && isSharedStorageDir(opts.outDir)) args.push('--restrict-filenames')
-  if (opts.ffmpegLocation) args.push('--ffmpeg-location', opts.ffmpegLocation)
+  if (opts.ffmpeg.location) args.push('--ffmpeg-location', opts.ffmpeg.location)
   return args
 }
 

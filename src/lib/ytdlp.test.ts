@@ -79,12 +79,13 @@ test('ensureYtDlp() resolves a yt-dlp binary on PATH', async () => {
   }
 })
 
-test('findFfmpeg() on Termux without ffmpeg returns undefined and hints pkg install ffmpeg', async () => {
+test('findFfmpeg() on Termux without ffmpeg reports unavailable and hints pkg install ffmpeg (D4)', async () => {
   const restoreTermux = termuxEnv(true)
   const restorePath = withPath('/nonexistent')
   const writeMock = mock.method(process.stderr, 'write', () => true)
   try {
-    assert.equal(await findFfmpeg(), undefined)
+    const status = await findFfmpeg()
+    assert.deepEqual(status, {available: false})
     assert.equal(writeMock.mock.callCount(), 1)
     assert.match(String(writeMock.mock.calls[0]?.arguments[0]), /pkg install ffmpeg/)
   } finally {
@@ -94,7 +95,7 @@ test('findFfmpeg() on Termux without ffmpeg returns undefined and hints pkg inst
   }
 })
 
-test('findFfmpeg() on Termux with ffmpeg on PATH returns undefined without a hint', async () => {
+test('findFfmpeg() on Termux with ffmpeg on PATH reports available with no location and no hint (D4)', async () => {
   const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'herlink-bin-'))
   try {
     fs.writeFileSync(path.join(bin, 'ffmpeg'), '#!/bin/sh\nexit 0\n', {mode: 0o755})
@@ -102,7 +103,9 @@ test('findFfmpeg() on Termux with ffmpeg on PATH returns undefined without a hin
     const restorePath = withPath(bin)
     const writeMock = mock.method(process.stderr, 'write', () => true)
     try {
-      assert.equal(await findFfmpeg(), undefined)
+      const status = await findFfmpeg()
+      // PATH ffmpeg: available, but no location — yt-dlp finds it itself
+      assert.deepEqual(status, {available: true})
       assert.equal(writeMock.mock.callCount(), 0)
     } finally {
       writeMock.mock.restore()
@@ -144,6 +147,7 @@ test('buildDownloadArgs() adds --restrict-filenames on Termux shared storage', (
       url: 'https://example.com/v',
       choice,
       outDir: path.join(os.homedir(), 'storage', 'downloads'),
+      ffmpeg: {available: false},
     })
     assert.ok(args.includes('--restrict-filenames'))
   } finally {
@@ -158,6 +162,7 @@ test('buildDownloadArgs() skips --restrict-filenames on Termux outside shared st
       url: 'https://example.com/v',
       choice,
       outDir: path.join(os.homedir(), 'Downloads'),
+      ffmpeg: {available: false},
     })
     assert.ok(!args.includes('--restrict-filenames'))
   } finally {
@@ -172,6 +177,7 @@ test('buildDownloadArgs() on desktop is unchanged (no --restrict-filenames)', ()
       url: 'https://example.com/v',
       choice,
       outDir: path.join(os.homedir(), 'Downloads'),
+      ffmpeg: {available: false},
     })
     // golden array — pins the exact desktop argument sequence so any future
     // reordering, drop, or unconditional insertion fails this test (REQ-08)
@@ -204,6 +210,7 @@ test('buildDownloadArgs() adds --continue after the choice args when resume is s
       url: 'https://example.com/v',
       choice,
       outDir: path.join(os.homedir(), 'Downloads'),
+      ffmpeg: {available: false},
       resume: true,
     })
     // golden array — --continue lands right after choice.args, before the tail
@@ -237,6 +244,7 @@ test('buildDownloadArgs() inserts --cookies right after the url when cookies are
       url: 'https://example.com/v',
       choice,
       outDir: path.join(os.homedir(), 'Downloads'),
+      ffmpeg: {available: false},
       cookies: '/tmp/cookies.txt',
     })
     // golden array — --cookies <file> lands between the url and choice.args
@@ -271,6 +279,7 @@ test('buildDownloadArgs() keeps a cookies path starting with "-" as its own argv
       url: 'https://example.com/v',
       choice,
       outDir: path.join(os.homedir(), 'Downloads'),
+      ffmpeg: {available: false},
       cookies: '-strange-cookies',
     })
     // spawn() receives separate argv elements — never a merged "--cookies=-x"
@@ -354,5 +363,217 @@ test('probe() omits --cookies when none are given', async () => {
     }
   } finally {
     fs.rmSync(bin, {recursive: true, force: true})
+  }
+})
+
+const AUDIO_CHOICE: DownloadChoice = {
+  label: 'solo audio · mp3',
+  kind: 'audio',
+  args: ['-f', 'ba/b', '-x', '--audio-format', 'mp3', '--audio-quality', '0'],
+}
+
+const DESKTOP_TAIL = [
+  '--no-playlist',
+  '--no-warnings',
+  '--newline',
+  '--no-quiet',
+  '--progress',
+  '--progress-template',
+  'download:HERLINK|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s',
+  '--print',
+  'after_move:filepath',
+  '--no-simulate',
+  '-o',
+  path.join(os.homedir(), 'Downloads', '%(title).60s.%(ext)s'),
+]
+
+test('buildDownloadArgs() embeds metadata + thumbnail with ffmpeg and passes --ffmpeg-location (REQ-009)', () => {
+  const restoreTermux = termuxEnv(false)
+  try {
+    const args = buildDownloadArgs({
+      url: 'https://example.com/v',
+      choice,
+      outDir: path.join(os.homedir(), 'Downloads'),
+      ffmpeg: {available: true, location: '/usr/bin/ffmpeg'},
+      embedMetadata: true,
+    })
+    // golden array — embed block lands between choice.args and the tail;
+    // --ffmpeg-location comes from ffmpeg.location at the very end
+    assert.deepEqual(args, [
+      'https://example.com/v',
+      '-f',
+      'bv*+ba/b',
+      '--embed-metadata',
+      '--embed-thumbnail',
+      ...DESKTOP_TAIL,
+      '--ffmpeg-location',
+      '/usr/bin/ffmpeg',
+    ])
+  } finally {
+    restoreTermux()
+  }
+})
+
+test('buildDownloadArgs() skips embed flags without ffmpeg and warns on stderr (REQ-011)', () => {
+  const restoreTermux = termuxEnv(false)
+  const writeMock = mock.method(process.stderr, 'write', () => true)
+  try {
+    const args = buildDownloadArgs({
+      url: 'https://example.com/v',
+      choice,
+      outDir: path.join(os.homedir(), 'Downloads'),
+      ffmpeg: {available: false},
+      embedMetadata: true,
+    })
+    assert.ok(!args.includes('--embed-metadata'), 'embed flags must be skipped, not passed to yt-dlp')
+    assert.ok(!args.includes('--embed-thumbnail'))
+    assert.equal(writeMock.mock.callCount(), 1)
+    assert.match(String(writeMock.mock.calls[0]?.arguments[0]), /ffmpeg/)
+  } finally {
+    writeMock.mock.restore()
+    restoreTermux()
+  }
+})
+
+test('buildDownloadArgs() omits embed flags when embedMetadata is off even with ffmpeg (REQ-010)', () => {
+  const restoreTermux = termuxEnv(false)
+  const writeMock = mock.method(process.stderr, 'write', () => true)
+  try {
+    const args = buildDownloadArgs({
+      url: 'https://example.com/v',
+      choice,
+      outDir: path.join(os.homedir(), 'Downloads'),
+      ffmpeg: {available: true},
+      embedMetadata: false,
+    })
+    // the off-switch resolved at parse (D3) — nothing to embed, no warn
+    assert.ok(!args.includes('--embed-metadata'))
+    assert.ok(!args.includes('--embed-thumbnail'))
+    assert.equal(writeMock.mock.callCount(), 0)
+  } finally {
+    writeMock.mock.restore()
+    restoreTermux()
+  }
+})
+
+test('buildDownloadArgs() writes --write-subs --sub-langs and --embed-subs with ffmpeg (REQ-012/013)', () => {
+  const restoreTermux = termuxEnv(false)
+  try {
+    const args = buildDownloadArgs({
+      url: 'https://example.com/v',
+      choice,
+      outDir: path.join(os.homedir(), 'Downloads'),
+      ffmpeg: {available: true},
+      subs: 'es,en',
+    })
+    // golden array — subs block lands between choice.args and the tail
+    assert.deepEqual(args, [
+      'https://example.com/v',
+      '-f',
+      'bv*+ba/b',
+      '--write-subs',
+      '--sub-langs',
+      'es,en',
+      '--embed-subs',
+      ...DESKTOP_TAIL,
+    ])
+  } finally {
+    restoreTermux()
+  }
+})
+
+test('buildDownloadArgs() --subs with no langs writes --write-subs only plus --embed-subs (REQ-012)', () => {
+  const restoreTermux = termuxEnv(false)
+  try {
+    const args = buildDownloadArgs({
+      url: 'https://example.com/v',
+      choice,
+      outDir: path.join(os.homedir(), 'Downloads'),
+      ffmpeg: {available: true},
+      subs: '',
+    })
+    assert.ok(args.includes('--write-subs'))
+    assert.ok(!args.includes('--sub-langs'), 'no langs → all auto-downloadable subs')
+    assert.ok(args.includes('--embed-subs'))
+  } finally {
+    restoreTermux()
+  }
+})
+
+test('buildDownloadArgs() omits --embed-subs without ffmpeg and warns (REQ-013)', () => {
+  const restoreTermux = termuxEnv(false)
+  const writeMock = mock.method(process.stderr, 'write', () => true)
+  try {
+    const args = buildDownloadArgs({
+      url: 'https://example.com/v',
+      choice,
+      outDir: path.join(os.homedir(), 'Downloads'),
+      ffmpeg: {available: false},
+      subs: 'es',
+    })
+    // subs still download — only embedding is skipped
+    assert.ok(args.includes('--write-subs'))
+    assert.ok(args.includes('--sub-langs'))
+    assert.equal(args[args.indexOf('--sub-langs') + 1], 'es')
+    assert.ok(!args.includes('--embed-subs'))
+    assert.equal(writeMock.mock.callCount(), 1)
+    assert.match(String(writeMock.mock.calls[0]?.arguments[0]), /ffmpeg/)
+  } finally {
+    writeMock.mock.restore()
+    restoreTermux()
+  }
+})
+
+test('buildDownloadArgs() adds no subs flags for an audio-only choice (REQ-014)', () => {
+  const restoreTermux = termuxEnv(false)
+  const writeMock = mock.method(process.stderr, 'write', () => true)
+  try {
+    const args = buildDownloadArgs({
+      url: 'https://example.com/v',
+      choice: AUDIO_CHOICE,
+      outDir: path.join(os.homedir(), 'Downloads'),
+      ffmpeg: {available: true},
+      subs: 'es',
+    })
+    assert.ok(!args.includes('--write-subs'))
+    assert.ok(!args.includes('--sub-langs'))
+    assert.ok(!args.includes('--embed-subs'))
+    assert.equal(writeMock.mock.callCount(), 0, 'audio-only must not warn either')
+  } finally {
+    writeMock.mock.restore()
+    restoreTermux()
+  }
+})
+
+test('buildDownloadArgs() pins the full block order: cookies, choice, resume, subs, embed (D5)', () => {
+  const restoreTermux = termuxEnv(false)
+  try {
+    const args = buildDownloadArgs({
+      url: 'https://example.com/v',
+      choice,
+      outDir: path.join(os.homedir(), 'Downloads'),
+      ffmpeg: {available: true},
+      resume: true,
+      cookies: '/tmp/cookies.txt',
+      embedMetadata: true,
+      subs: 'es',
+    })
+    assert.deepEqual(args, [
+      'https://example.com/v',
+      '--cookies',
+      '/tmp/cookies.txt',
+      '-f',
+      'bv*+ba/b',
+      '--continue',
+      '--write-subs',
+      '--sub-langs',
+      'es',
+      '--embed-subs',
+      '--embed-metadata',
+      '--embed-thumbnail',
+      ...DESKTOP_TAIL,
+    ])
+  } finally {
+    restoreTermux()
   }
 })

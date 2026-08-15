@@ -28,6 +28,7 @@ import {
   probe,
   type DownloadChoice,
   type DownloadProgress,
+  type FfmpegStatus,
   type VideoInfo,
 } from './lib/ytdlp.js'
 
@@ -141,6 +142,8 @@ type AppProps = {
   outDirOverride?: string
   resume?: boolean
   cookies?: string
+  embedMetadata?: boolean
+  subs?: string
   onOutcome: (outcome: Outcome) => void
 }
 
@@ -163,6 +166,8 @@ function AppContent({
   outDirOverride,
   resume,
   cookies,
+  embedMetadata,
+  subs,
   onOutcome,
   cycleTheme,
 }: {
@@ -171,6 +176,8 @@ function AppContent({
   outDirOverride?: string
   resume?: boolean
   cookies?: string
+  embedMetadata?: boolean
+  subs?: string
   onOutcome: (outcome: Outcome) => void
   cycleTheme: () => void
 }) {
@@ -287,8 +294,8 @@ function AppContent({
           setPhase(prev => (prev.name === 'downloading' ? {...prev, processing: true} : prev)),
       }
       try {
-        const ffmpegLocation = await findFfmpeg()
-        const base = {ytdlp: ytdlpRef.current, ffmpegLocation, url, choice, outDir, resume, cookies}
+        const ffmpeg: FfmpegStatus = await findFfmpeg()
+        const base = {ytdlp: ytdlpRef.current, ffmpeg, url, choice, outDir, resume, cookies, embedMetadata, subs}
         let filepath: string
         try {
           // reuse the probe's metadata — starts immediately instead of re-extracting

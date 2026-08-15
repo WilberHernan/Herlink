@@ -67,7 +67,12 @@ if (args.scriptable && !isTTY) {
     const outcome = await runScriptable(
       ytdlp,
       args.urls.map(url => ({url})),
-      {outDir, scriptable: args.scriptable},
+      {
+        outDir,
+        scriptable: args.scriptable,
+        embedMetadata: args.embedMetadata,
+        subs: args.subs,
+      },
     )
     // runScriptable already printed filepaths (stdout) and errors (stderr)
     process.exit(outcome.errors.length > 0 || outcome.cancelled ? 1 : 0)
@@ -112,6 +117,8 @@ const {waitUntilExit} = render(
     outDirOverride={args.outDir}
     resume={args.resume}
     cookies={args.cookies}
+    embedMetadata={args.embedMetadata}
+    subs={args.subs}
     onOutcome={result => (outcome = result)}
   />,
   // keep a copy of every frame so clicks can be hit-tested against it

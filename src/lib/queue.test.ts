@@ -14,7 +14,7 @@ test('runQueue probes and downloads a single item in order, aggregating the file
   const calls: string[] = []
   const outcome = await runQueue(
     [{url: 'https://example.com/v'}],
-    {ytdlp: 'yt-dlp', outDir: '/tmp/Downloads', choiceFor: () => choice},
+    {ytdlp: 'yt-dlp', outDir: '/tmp/Downloads', ffmpeg: {available: false}, choiceFor: () => choice},
     {
       probe: async () => {
         calls.push('probe')
@@ -36,7 +36,7 @@ test('runQueue retries with a fresh extraction when the cached-info download fai
   let downloads = 0
   const outcome = await runQueue(
     [{url: 'https://example.com/v'}],
-    {ytdlp: 'yt-dlp', outDir: '/tmp/Downloads', choiceFor: () => choice},
+    {ytdlp: 'yt-dlp', outDir: '/tmp/Downloads', ffmpeg: {available: false}, choiceFor: () => choice},
     {
       probe: async () => ({info: info(), infoJsonPath: '/tmp/info.json'}),
       download: async (opts: DownloadArgs & {ytdlp: string}) => {
@@ -63,7 +63,7 @@ test('runScriptable creates the outDir, downloads with the best choice, and prin
       {
         probe: async () => ({info: info(), infoJsonPath: '/tmp/info.json'}),
         download: async (opts: DownloadArgs & {ytdlp: string}) => path.join(outDir, 'v.mp4'),
-        findFfmpeg: async () => undefined,
+        findFfmpeg: async () => ({available: false}),
       },
     )
     assert.ok(fs.existsSync(outDir), 'runScriptable must create the outDir')
@@ -92,7 +92,7 @@ test('runScriptable with --mp3 downloads the audio choice', async () => {
           seenArgs = opts.choice.args
           return path.join(outDir, 'v.mp3')
         },
-        findFfmpeg: async () => undefined,
+        findFfmpeg: async () => ({available: false}),
       },
     )
     assert.ok(seenArgs.includes('-x'), 'audio choice must extract')

@@ -9,6 +9,7 @@ import {
   type DownloadChoice,
   type DownloadHandlers,
   type DownloadProgress,
+  type FfmpegStatus,
   type ProbeResult,
   type VideoInfo,
 } from './ytdlp.js'
@@ -27,7 +28,9 @@ export type QueueDeps = {
 export type QueueRunOptions = {
   ytdlp: string
   outDir: string
-  ffmpegLocation?: string
+  ffmpeg: FfmpegStatus
+  embedMetadata?: boolean
+  subs?: string
   // TTY defers to the picker ('pick'), scriptable resolves immediately
   choiceFor: (info: VideoInfo) => DownloadChoice | 'pick' | 'cancel'
   signal?: AbortSignal
@@ -77,7 +80,14 @@ export async function runQueue(
       onProgress: opts.onProgress ?? (() => {}),
       onProcessing: opts.onProcessing ?? (() => {}),
     }
-    const base = {ytdlp: opts.ytdlp, choice, outDir: opts.outDir, ffmpegLocation: opts.ffmpegLocation}
+    const base = {
+      ytdlp: opts.ytdlp,
+      choice,
+      outDir: opts.outDir,
+      ffmpeg: opts.ffmpeg,
+      embedMetadata: opts.embedMetadata,
+      subs: opts.subs,
+    }
     try {
       filepaths.push(await doDownload({...base, url: item.url, infoJsonPath}, handlers, opts.signal))
     } catch (error) {
@@ -104,6 +114,8 @@ export async function runQueue(
 export type ScriptableOptions = {
   outDir: string
   scriptable: 'best' | 'mp3'
+  embedMetadata?: boolean
+  subs?: string
   signal?: AbortSignal
 }
 
@@ -121,13 +133,15 @@ export async function runScriptable(
   await fs.mkdir(opts.outDir, {recursive: true})
   await fs.access(opts.outDir, fs.constants.W_OK)
   const doFindFfmpeg = deps.findFfmpeg ?? findFfmpeg
-  const ffmpegLocation = await doFindFfmpeg()
+  const ffmpeg = await doFindFfmpeg()
   const outcome = await runQueue(
     items,
     {
       ytdlp,
       outDir: opts.outDir,
-      ffmpegLocation,
+      ffmpeg,
+      embedMetadata: opts.embedMetadata,
+      subs: opts.subs,
       signal: opts.signal,
       choiceFor: info => (opts.scriptable === 'mp3' ? audioChoice(info) : bestChoice(info)),
       onStatus: message => process.stderr.write(message + '\n'),
