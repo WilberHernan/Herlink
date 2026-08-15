@@ -31,7 +31,7 @@ const HELP = `
   Impulsado por yt-dlp — YouTube, X, Instagram, Threads, TikTok y más de 1800 sitios.
 `
 
-const args = parseArgs(process.argv.slice(2))
+const args = await parseArgs(process.argv.slice(2))
 
 if (args.error) {
   console.error(`herlink: ${args.error}\nPrueba con “herlink --help” para ver el uso.`)
@@ -48,7 +48,7 @@ if (args.version) {
   process.exit(0)
 }
 
-const initialUrl = args.initialUrl
+const initialUrl = args.urls[0]
 const initialThemeMode = args.themeMode ?? 'auto'
 
 const isTTY = Boolean(process.stdout.isTTY)

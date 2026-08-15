@@ -3,29 +3,124 @@ import test from 'node:test'
 import {parseArgs} from './args.js'
 import {isThemeMode, nextThemeMode, themeFor} from '../theme.js'
 
-test('parses a url and a spaced theme option without confusing the value for the url', () => {
-  assert.deepEqual(parseArgs(['--theme', 'light', 'https://example.com/video']), {
+test('parses a url and a spaced theme option without confusing the value for the url', async () => {
+  assert.deepEqual(await parseArgs(['--theme', 'light', 'https://example.com/video']), {
     help: false,
     version: false,
+    urls: ['https://example.com/video'],
     themeMode: 'light',
-    initialUrl: 'https://example.com/video',
+    embedMetadata: false,
+    resume: false,
+    noUpdate: false,
   })
 })
 
-test('parses an equals-style theme option after the url', () => {
-  assert.deepEqual(parseArgs(['https://example.com/video', '--theme=dark']), {
+test('parses an equals-style theme option after the url', async () => {
+  assert.deepEqual(await parseArgs(['https://example.com/video', '--theme=dark']), {
     help: false,
     version: false,
+    urls: ['https://example.com/video'],
     themeMode: 'dark',
-    initialUrl: 'https://example.com/video',
+    embedMetadata: false,
+    resume: false,
+    noUpdate: false,
   })
 })
 
-test('rejects missing, invalid, and unknown options', () => {
-  assert.match(parseArgs(['--theme']).error ?? '', /necesita un valor/)
-  assert.match(parseArgs(['--theme', 'sepia']).error ?? '', /tema desconocido/)
-  assert.match(parseArgs(['--wat']).error ?? '', /opción desconocida/)
-  assert.match(parseArgs(['one', 'two']).error ?? '', /una sola url/)
+test('collects multiple positional urls in order', async () => {
+  assert.deepEqual(await parseArgs(['https://a.example/v', 'https://b.example/v', 'https://c.example/v']), {
+    help: false,
+    version: false,
+    urls: ['https://a.example/v', 'https://b.example/v', 'https://c.example/v'],
+    embedMetadata: false,
+    resume: false,
+    noUpdate: false,
+  })
+})
+
+test('rejects missing, invalid, and unknown options', async () => {
+  assert.match((await parseArgs(['--theme'])).error ?? '', /necesita un valor/)
+  assert.match((await parseArgs(['--theme', 'sepia'])).error ?? '', /tema desconocido/)
+  assert.match((await parseArgs(['--wat'])).error ?? '', /opción desconocida/)
+})
+
+test('--best and --mp3 are mutually exclusive', async () => {
+  assert.match((await parseArgs(['--best', '--mp3', 'https://example.com/v'])).error ?? '', /mutuamente excluyentes/)
+  assert.match((await parseArgs(['--mp3', '--best', 'https://example.com/v'])).error ?? '', /mutuamente excluyentes/)
+})
+
+test('--best without any url fails asking for one', async () => {
+  assert.match((await parseArgs(['--best'])).error ?? '', /necesitan una url/)
+  assert.match((await parseArgs(['--mp3'])).error ?? '', /necesitan una url/)
+})
+
+test('--best and --mp3 set the scriptable kind', async () => {
+  const best = await parseArgs(['--best', 'https://example.com/v'])
+  assert.equal(best.error, undefined)
+  assert.equal(best.scriptable, 'best')
+  const mp3 = await parseArgs(['--mp3', 'https://example.com/v'])
+  assert.equal(mp3.error, undefined)
+  assert.equal(mp3.scriptable, 'mp3')
+})
+
+test('-o, --cookies and --file require a value', async () => {
+  assert.match((await parseArgs(['-o'])).error ?? '', /necesita un valor/)
+  assert.match((await parseArgs(['--cookies'])).error ?? '', /necesita un valor/)
+  assert.match((await parseArgs(['--file'])).error ?? '', /necesita un valor/)
+})
+
+test('-o sets the outDir override', async () => {
+  const result = await parseArgs(['-o', '/tmp/vids', 'https://example.com/v'])
+  assert.equal(result.error, undefined)
+  assert.equal(result.outDir, '/tmp/vids')
+})
+
+test('--cookies and --file store their paths', async () => {
+  const result = await parseArgs(['--cookies', 'cookies.txt', '--file', 'urls.txt', 'https://example.com/v'])
+  assert.equal(result.error, undefined)
+  assert.equal(result.cookies, 'cookies.txt')
+  assert.equal(result.file, 'urls.txt')
+})
+
+test('--subs with a lang list consumes the next token', async () => {
+  const result = await parseArgs(['--subs', 'es,en', 'https://example.com/v'])
+  assert.equal(result.error, undefined)
+  assert.equal(result.subs, 'es,en')
+  assert.deepEqual(result.urls, ['https://example.com/v'])
+})
+
+test('--subs followed by a url keeps all langs and the url positional', async () => {
+  const result = await parseArgs(['--subs', 'https://example.com/v'])
+  assert.equal(result.error, undefined)
+  assert.equal(result.subs, '')
+  assert.deepEqual(result.urls, ['https://example.com/v'])
+})
+
+test('--subs followed by a flag keeps all langs', async () => {
+  const result = await parseArgs(['--subs', '--best', 'https://example.com/v'])
+  assert.equal(result.error, undefined)
+  assert.equal(result.subs, '')
+  assert.equal(result.scriptable, 'best')
+})
+
+test('--subs=langs equals form', async () => {
+  const result = await parseArgs(['--subs=es,en', 'https://example.com/v'])
+  assert.equal(result.error, undefined)
+  assert.equal(result.subs, 'es,en')
+})
+
+test('--no-embed-metadata wins over --embed-metadata in either order', async () => {
+  assert.equal((await parseArgs(['--embed-metadata', '--no-embed-metadata', 'u'])).embedMetadata, false)
+  assert.equal((await parseArgs(['--no-embed-metadata', '--embed-metadata', 'u'])).embedMetadata, false)
+  assert.equal((await parseArgs(['--embed-metadata', 'u'])).embedMetadata, true)
+  assert.equal((await parseArgs(['u'])).embedMetadata, false)
+})
+
+test('--continue sets resume and --no-update sets noUpdate', async () => {
+  const result = await parseArgs(['--continue', '--no-update', 'u'])
+  assert.equal(result.error, undefined)
+  assert.equal(result.resume, true)
+  assert.equal(result.noUpdate, true)
 })
 
 test('recognizes only supported modes and cycles through all of them', () => {
