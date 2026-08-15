@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+.claude/
+
+# local skill registry (not part of the repo)
+.atl/
