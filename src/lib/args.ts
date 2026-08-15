@@ -85,7 +85,26 @@ export async function parseArgs(args: string[]): Promise<CliArgs> {
     }
   }
 
-  if (result.scriptable && result.urls.length === 0 && !result.file) {
+  // --file read at parse time (D1, REQ-016): newline-separated urls, junk
+  // lines filtered, survivors appended after the positionals
+  if (result.file) {
+    let content: string
+    try {
+      content = await fs.readFile(result.file, 'utf8')
+    } catch {
+      return {...result, error: `el archivo “${result.file}” no existe o no es legible`}
+    }
+    const fromFile = content
+      .split('\n')
+      .map(line => line.trim())
+      .filter(isProbablyUrl)
+    if (fromFile.length === 0) {
+      return {...result, error: `“${result.file}” no contiene urls válidas`}
+    }
+    result.urls.push(...fromFile)
+  }
+
+  if (result.scriptable && result.urls.length === 0) {
     return {...result, error: '--best/--mp3 necesitan una url o --file'}
   }
   if (result.cookies) {

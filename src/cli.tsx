@@ -54,7 +54,6 @@ if (args.version) {
   process.exit(0)
 }
 
-const initialUrl = args.urls[0]
 const initialThemeMode = args.themeMode ?? 'auto'
 
 const isTTY = Boolean(process.stdout.isTTY)
@@ -84,7 +83,7 @@ if (args.scriptable && !isTTY) {
 
 // no url given — offer the clipboard url (⇥ to paste) when it already holds one
 let clipboardUrl: string | undefined
-if (!initialUrl && isTTY) {
+if (args.urls.length === 0 && isTTY) {
   const clipped = readClipboard().trim()
   // reject multi-line clipboard content — new URL() silently strips newlines
   if (clipped && !/\s/.test(clipped) && isProbablyUrl(clipped)) clipboardUrl = clipped
@@ -111,7 +110,7 @@ if (isTTY) {
 let outcome: Outcome = {}
 const {waitUntilExit} = render(
   <App
-    initialUrl={initialUrl}
+    initialUrls={args.urls}
     clipboardUrl={clipboardUrl}
     initialThemeMode={initialThemeMode}
     outDirOverride={args.outDir}

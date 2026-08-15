@@ -18,14 +18,12 @@ import {detectPlatform, isProbablyUrl, type Platform} from './lib/platforms.js'
 import {isTermux, resolveOutDir} from './lib/termux.js'
 import {useMouseClick} from './lib/use-mouse-click.js'
 import {nextThemeMode, ThemeProvider, type ThemeMode, useTheme} from './theme.js'
-import type {Outcome} from './lib/queue.js'
+import {runQueue, type Outcome} from './lib/queue.js'
 export type {Outcome} from './lib/queue.js'
 import {
   buildChoices,
-  download,
   ensureYtDlp,
   findFfmpeg,
-  probe,
   type DownloadChoice,
   type DownloadProgress,
   type FfmpegStatus,
@@ -103,7 +101,7 @@ type Phase =
       processing: boolean
       refreshing?: boolean
     }
-  | {name: 'done'; filepath: string}
+  | {name: 'done'; filepaths: string[]; cancelled: boolean}
   | {name: 'error'; message: string}
 
 const HINTS: Record<Phase['name'], Array<[string, string]>> = {
@@ -118,7 +116,7 @@ const HINTS: Record<Phase['name'], Array<[string, string]>> = {
   picking: [
     ['↑↓', 'elegir'],
     ['↵', 'bajar'],
-    ['esc', 'atrás'],
+    ['esc', 'cancelar'],
     ['^c', 'salir'],
   ],
   downloading: [
@@ -136,7 +134,7 @@ const HINTS: Record<Phase['name'], Array<[string, string]>> = {
 }
 
 type AppProps = {
-  initialUrl?: string
+  initialUrls?: string[]
   clipboardUrl?: string
   initialThemeMode?: ThemeMode
   outDirOverride?: string
@@ -161,7 +159,7 @@ export function App({initialThemeMode = 'auto', ...props}: AppProps) {
 }
 
 function AppContent({
-  initialUrl,
+  initialUrls,
   clipboardUrl,
   outDirOverride,
   resume,
@@ -171,7 +169,7 @@ function AppContent({
   onOutcome,
   cycleTheme,
 }: {
-  initialUrl?: string
+  initialUrls?: string[]
   clipboardUrl?: string
   outDirOverride?: string
   resume?: boolean
@@ -184,7 +182,9 @@ function AppContent({
   const theme = useTheme()
   const {exit} = useApp()
   const {stdout} = useStdout()
-  const [url, setUrl] = useState(initialUrl ?? '')
+  const [queue, setQueue] = useState<string[]>(initialUrls ?? [])
+  const [queueIndex, setQueueIndex] = useState(0)
+  const [url, setUrl] = useState(initialUrls?.[0] ?? '')
   const [urlInput, setUrlInput] = useState('')
   // -o override wins; ~/Downloads default, then shared storage on Termux once
   // resolveOutDir lands (effect below is skipped when the override is set)
@@ -195,42 +195,97 @@ function AppContent({
   const [choices, setChoices] = useState<DownloadChoice[]>([])
   const ytdlpRef = useRef('')
   const highlightRef = useRef(0) // choice under the cursor, for the ↵ hint click
-  const infoJsonRef = useRef<string | undefined>(undefined)
   const abortRef = useRef<AbortController | undefined>(undefined)
-  const [phase, setPhase] = useState<Phase>(initialUrl ? {name: 'probing', status: 'preparando…'} : {name: 'input'})
+  // resolves runQueue's per-item choiceFor promise once the picker answers
+  const pickRef = useRef<((choice: DownloadChoice | 'cancel') => void) | undefined>(undefined)
+  const [phase, setPhase] = useState<Phase>(
+    initialUrls?.length ? {name: 'probing', status: 'preparando…'} : {name: 'input'},
+  )
 
   const columns = stdout?.columns && stdout.columns > 0 ? stdout.columns : 80
   const boxWidth = Math.max(14, Math.min(64, columns - 6))
   const contentWidth = Math.max(10, Math.min(columns - 4, 78))
 
-  const startProbe = useCallback(async (targetUrl: string) => {
-    const controller = new AbortController()
-    abortRef.current = controller
-    setPlatform(detectPlatform(targetUrl))
-    setPhase({name: 'probing', status: 'preparando…'})
-    try {
-      const ytdlp =
-        ytdlpRef.current ||
-        (await ensureYtDlp(status => setPhase({name: 'probing', status}), controller.signal))
-      ytdlpRef.current = ytdlp
-      if (controller.signal.aborted) return
-      setPhase({name: 'probing', status: 'obteniendo info del video…'})
-      const {info: videoInfo, infoJsonPath} = await probe(ytdlp, targetUrl, controller.signal, cookies)
-      if (controller.signal.aborted) return
-      infoJsonRef.current = infoJsonPath
-      setInfo(videoInfo)
-      setChoices(buildChoices(videoInfo))
-      highlightRef.current = 0
-      setPhase({name: 'picking'})
-    } catch (error) {
-      if (controller.signal.aborted) return
-      setPhase({name: 'error', message: error instanceof Error ? error.message : String(error)})
-    }
-  }, [])
+  const startQueue = useCallback(
+    async (urls: string[]) => {
+      const controller = new AbortController()
+      abortRef.current = controller
+      setQueue(urls)
+      setQueueIndex(0)
+      setUrl(urls[0] ?? '')
+      setPhase({name: 'probing', status: 'preparando…'})
+      try {
+        const ytdlp =
+          ytdlpRef.current ||
+          (await ensureYtDlp(status => setPhase({name: 'probing', status}), controller.signal))
+        ytdlpRef.current = ytdlp
+        if (controller.signal.aborted) return
+        setPhase({name: 'probing', status: 'obteniendo info del video…'})
+        const ffmpeg: FfmpegStatus = await findFfmpeg()
+        if (controller.signal.aborted) return
+        // the sequential queue driver (D9): probe → pick → download → next
+        // item, with React callbacks driving every phase transition
+        const outcome = await runQueue(
+          urls.map(url => ({url})),
+          {
+            ytdlp,
+            outDir,
+            ffmpeg,
+            resume,
+            cookies,
+            embedMetadata,
+            subs,
+            signal: controller.signal,
+            onItem: index => {
+              setQueueIndex(index)
+              setUrl(urls[index]!)
+              setPlatform(detectPlatform(urls[index]!))
+              setPhase({name: 'probing', status: 'obteniendo info del video…'})
+            },
+            choiceFor: (videoInfo): Promise<DownloadChoice | 'cancel'> => {
+              setInfo(videoInfo)
+              setChoices(buildChoices(videoInfo))
+              highlightRef.current = 0
+              setPhase({name: 'picking'})
+              // the picker answers via handlePick; esc resolves 'cancel' (REQ-017)
+              return new Promise(resolve => {
+                pickRef.current = resolve
+              })
+            },
+            onProgress: progress =>
+              setPhase(prev => (prev.name === 'downloading' ? {...prev, progress, processing: false} : prev)),
+            onProcessing: () =>
+              setPhase(prev => (prev.name === 'downloading' ? {...prev, processing: true} : prev)),
+            onRetry: () =>
+              setPhase(prev =>
+                prev.name === 'downloading' ? {...prev, progress: undefined, refreshing: true} : prev,
+              ),
+          },
+        )
+        onOutcome(outcome)
+        if (!outcome.cancelled) for (const itemUrl of urls) setHistory(addToHistory(itemUrl))
+        if (outcome.cancelled) {
+          // remaining items skipped, already-downloaded files kept (REQ-017)
+          setPhase({name: 'done', filepaths: outcome.filepaths, cancelled: true})
+        } else if (outcome.errors.length > 0) {
+          setPhase({name: 'error', message: outcome.errors[0]!})
+        } else {
+          setPhase({name: 'done', filepaths: outcome.filepaths, cancelled: false})
+        }
+      } catch (error) {
+        if (controller.signal.aborted) {
+          setPhase({name: 'done', filepaths: [], cancelled: true})
+          return
+        }
+        setPhase({name: 'error', message: error instanceof Error ? error.message : String(error)})
+      }
+    },
+    [outDir, resume, cookies, embedMetadata, subs, onOutcome],
+  )
 
   useEffect(() => {
-    if (initialUrl) void startProbe(initialUrl)
-  }, [initialUrl, startProbe])
+    if (initialUrls?.length) void startQueue(initialUrls)
+  }, [initialUrls, startQueue])
 
   useEffect(() => {
     if (!isTermux() || outDirOverride) return
@@ -241,6 +296,8 @@ function AppContent({
   }, [outDirOverride])
 
   const resetToInput = useCallback(() => {
+    setQueue([])
+    setQueueIndex(0)
     setUrl('')
     setUrlInput('')
     setPlatform(undefined)
@@ -249,11 +306,15 @@ function AppContent({
     setPhase({name: 'input'})
   }, [])
 
+  // whole-queue cancel (REQ-017): abort the current item, resolve a pending
+  // pick with 'cancel' so runQueue skips the remaining items and keeps the
+  // files already downloaded
   const cancelRun = useCallback(() => {
     abortRef.current?.abort()
-    resetToInput()
+    pickRef.current?.('cancel')
+    pickRef.current = undefined
     setUrlInput(url) // keep the link around so a cancel isn't destructive
-  }, [resetToInput, url])
+  }, [url])
 
   useInput(
     (input, key) => {
@@ -261,8 +322,10 @@ function AppContent({
         cycleTheme()
         return
       }
-      if (key.escape && (phase.name === 'picking' || phase.name === 'error' || phase.name === 'done')) resetToInput()
-      if (key.escape && (phase.name === 'probing' || phase.name === 'downloading')) cancelRun()
+      if (key.escape && (phase.name === 'error' || phase.name === 'done')) resetToInput()
+      if (key.escape && (phase.name === 'probing' || phase.name === 'downloading' || phase.name === 'picking')) {
+        cancelRun()
+      }
       if (key.return && (phase.name === 'error' || phase.name === 'done')) resetToInput()
     },
     {isActive: Boolean(process.stdin.isTTY)},
@@ -274,8 +337,7 @@ function AppContent({
       setPhase({name: 'input', warning: 'eso no parece un enlace — pega una url completa'})
       return
     }
-    setUrl(trimmed)
-    void startProbe(trimmed)
+    void startQueue([trimmed])
   }
 
   const clipboardOffered = Boolean(clipboardUrl) && urlInput === ''
@@ -283,39 +345,10 @@ function AppContent({
 
   const handlePick = (item: {value: number}) => {
     const choice = choices[item.value]
-    const controller = new AbortController()
-    abortRef.current = controller
+    if (!choice) return
+    pickRef.current?.(choice)
+    pickRef.current = undefined
     setPhase({name: 'downloading', choice, processing: false})
-    void (async () => {
-      const handlers = {
-        onProgress: (progress: DownloadProgress) =>
-          setPhase(prev => (prev.name === 'downloading' ? {...prev, progress, processing: false} : prev)),
-        onProcessing: () =>
-          setPhase(prev => (prev.name === 'downloading' ? {...prev, processing: true} : prev)),
-      }
-      try {
-        const ffmpeg: FfmpegStatus = await findFfmpeg()
-        const base = {ytdlp: ytdlpRef.current, ffmpeg, url, choice, outDir, resume, cookies, embedMetadata, subs}
-        let filepath: string
-        try {
-          // reuse the probe's metadata — starts immediately instead of re-extracting
-          filepath = await download({...base, infoJsonPath: infoJsonRef.current}, handlers, controller.signal)
-        } catch (error) {
-          if (controller.signal.aborted) throw error
-          // media urls in the cached info can expire — retry with a fresh extraction
-          setPhase(prev =>
-            prev.name === 'downloading' ? {...prev, progress: undefined, refreshing: true} : prev,
-          )
-          filepath = await download(base, handlers, controller.signal)
-        }
-        onOutcome({filepaths: [filepath]})
-        setHistory(addToHistory(url))
-        setPhase({name: 'done', filepath})
-      } catch (error) {
-        if (controller.signal.aborted) return
-        setPhase({name: 'error', message: error instanceof Error ? error.message : String(error)})
-      }
-    })()
   }
 
   let hints: Array<[string, string]> = [...HINTS[phase.name], ['^t', `tema:${theme.mode}`]]
@@ -329,7 +362,10 @@ function AppContent({
   const hintAction = (key: string): (() => void) | undefined => {
     if (key === '^c') return () => exit()
     if (key === '^t') return cycleTheme
-    if (key === 'esc') return phase.name === 'probing' || phase.name === 'downloading' ? cancelRun : resetToInput
+    if (key === 'esc')
+      return phase.name === 'probing' || phase.name === 'downloading' || phase.name === 'picking'
+        ? cancelRun
+        : resetToInput
     if (key === '↵') {
       if (phase.name === 'input') return () => handleUrlSubmit(urlInput)
       if (phase.name === 'picking') return () => handlePick({value: highlightRef.current})
@@ -366,7 +402,7 @@ function AppContent({
       if (inLogo) {
         const span = frameRowSpan(y - 1)
         if (span && x >= span[0] - 1 && x <= span[1] + 1) {
-          if (phase.name === 'probing' || phase.name === 'downloading') cancelRun()
+          if (phase.name === 'probing' || phase.name === 'downloading' || phase.name === 'picking') cancelRun()
           else if (phase.name !== 'input') resetToInput()
           return
         }
@@ -462,6 +498,7 @@ function AppContent({
       {phase.name === 'downloading' && (
         <Box flexDirection="column" alignItems="center">
           <Text color={theme.emphasized}>
+            {queue.length > 1 ? <Text color={theme.muted}>video {queueIndex + 1}/{queue.length} · </Text> : null}
             {info?.title ? `${truncate(info.title, 42)} · ` : ''}
             {phase.choice.label}
           </Text>
@@ -515,11 +552,29 @@ function AppContent({
       {phase.name === 'done' && (
         <Box flexDirection="column" alignItems="center">
           <Text>
-            <Text bold color={theme.success}>✓ Descargado </Text>
-            <Text color={theme.muted}>tu archivo está en:</Text>
+            {phase.cancelled ? (
+              <Text bold color={theme.warning}>✗ Cancelado </Text>
+            ) : phase.filepaths.length > 1 ? (
+              <Text bold color={theme.success}>✓ Descargados {phase.filepaths.length} archivos </Text>
+            ) : (
+              <Text bold color={theme.success}>✓ Descargado </Text>
+            )}
+            <Text color={theme.muted}>
+              {phase.cancelled
+                ? phase.filepaths.length > 0
+                  ? 'se guardaron los archivos ya descargados:'
+                  : 'no se descargó ningún archivo'
+                : phase.filepaths.length > 1
+                  ? 'están en:'
+                  : 'tu archivo está en:'}
+            </Text>
           </Text>
           <Gap />
-          <Text color={theme.info}>{shortenPath(phase.filepath, os.homedir(), 60)}</Text>
+          {phase.filepaths.map(filepath => (
+            <Text key={filepath} color={theme.info}>
+              {shortenPath(filepath, os.homedir(), 60)}
+            </Text>
+          ))}
         </Box>
       )}
 

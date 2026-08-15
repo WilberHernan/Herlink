@@ -33,9 +33,14 @@ export type QueueRunOptions = {
   cookies?: string
   embedMetadata?: boolean
   subs?: string
-  // TTY defers to the picker ('pick'), scriptable resolves immediately
-  choiceFor: (info: VideoInfo) => DownloadChoice | 'pick' | 'cancel'
+  // TTY defers to the picker (async promise resolved on select), scriptable
+  // resolves immediately; 'cancel' aborts the queue
+  choiceFor: (
+    info: VideoInfo,
+  ) => DownloadChoice | 'pick' | 'cancel' | Promise<DownloadChoice | 'pick' | 'cancel'>
   signal?: AbortSignal
+  onItem?: (index: number) => void // per-item hook for UI state (url, "video i/N")
+  onRetry?: () => void // fired before the fresh-extraction retry
   onProgress?: (progress: DownloadProgress) => void
   onProcessing?: () => void
   onStatus?: (message: string) => void
@@ -58,17 +63,31 @@ export async function runQueue(
   const errors: string[] = []
   let cancelled = false
 
-  for (const item of items) {
+  for (const [index, item] of items.entries()) {
     if (opts.signal?.aborted) {
       cancelled = true
       break
     }
-    const {info, infoJsonPath} = await doProbe(opts.ytdlp, item.url, opts.signal, opts.cookies)
+    opts.onItem?.(index)
+    let info: VideoInfo
+    let infoJsonPath: string | undefined
+    try {
+      const result = await doProbe(opts.ytdlp, item.url, opts.signal, opts.cookies)
+      info = result.info
+      infoJsonPath = result.infoJsonPath
+    } catch (error) {
+      if (opts.signal?.aborted) {
+        cancelled = true
+        break
+      }
+      errors.push(error instanceof Error ? error.message : String(error))
+      continue
+    }
     if (opts.signal?.aborted) {
       cancelled = true
       break
     }
-    const choice = opts.choiceFor(info)
+    const choice = await opts.choiceFor(info)
     if (choice === 'cancel' || opts.signal?.aborted) {
       cancelled = true
       break
@@ -100,6 +119,7 @@ export async function runQueue(
         break
       }
       // media urls in the cached info can expire — retry with a fresh extraction
+      opts.onRetry?.()
       try {
         filepaths.push(await doDownload({...base, url: item.url}, handlers, opts.signal))
       } catch (error2) {

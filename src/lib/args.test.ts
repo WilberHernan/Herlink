@@ -78,15 +78,65 @@ test('-o sets the outDir override', async () => {
   assert.equal(result.outDir, '/tmp/vids')
 })
 
-test('--cookies and --file store their paths', async () => {
+test('--cookies stores its path and --file appends valid urls after positionals (REQ-016)', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'herlink-args-'))
   try {
     const cookiesPath = path.join(dir, 'cookies.txt')
     fs.writeFileSync(cookiesPath, '# Netscape HTTP Cookie File\n')
-    const result = await parseArgs(['--cookies', cookiesPath, '--file', 'urls.txt', 'https://example.com/v'])
+    const filePath = path.join(dir, 'urls.txt')
+    fs.writeFileSync(filePath, 'https://b.example/v\n\njunk line\nhttps://c.example/v\n')
+    const result = await parseArgs(['--cookies', cookiesPath, '--file', filePath, 'https://a.example/v'])
     assert.equal(result.error, undefined)
     assert.equal(result.cookies, cookiesPath)
-    assert.equal(result.file, 'urls.txt')
+    assert.equal(result.file, filePath)
+    assert.deepEqual(result.urls, ['https://a.example/v', 'https://b.example/v', 'https://c.example/v'])
+  } finally {
+    fs.rmSync(dir, {recursive: true, force: true})
+  }
+})
+
+test('--file with a missing path fails with a clear file error (REQ-016)', async () => {
+  const result = await parseArgs(['--file', './missing-urls.txt', 'https://example.com/v'])
+  assert.match(result.error ?? '', /missing-urls\.txt/)
+  assert.match(result.error ?? '', /no existe o no es legible/)
+})
+
+test('--file yielding zero valid urls fails before any download (REQ-016)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'herlink-args-'))
+  try {
+    const filePath = path.join(dir, 'junk.txt')
+    fs.writeFileSync(filePath, 'not a url\n\n@@@\n')
+    const result = await parseArgs(['--file', filePath])
+    assert.match(result.error ?? '', /no contiene urls válidas/)
+    assert.deepEqual(result.urls, [])
+  } finally {
+    fs.rmSync(dir, {recursive: true, force: true})
+  }
+})
+
+test('--file trims whitespace-padded urls and never splits a line into pieces (threat matrix)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'herlink-args-'))
+  try {
+    const filePath = path.join(dir, 'urls.txt')
+    fs.writeFileSync(filePath, '  https://example.com/v  \nhttps://example.com/a b\n')
+    const result = await parseArgs(['--file', filePath])
+    assert.equal(result.error, undefined)
+    // the space-y line stays ONE element (never split into 'a' and 'b')
+    assert.deepEqual(result.urls, ['https://example.com/v', 'https://example.com/a b'])
+  } finally {
+    fs.rmSync(dir, {recursive: true, force: true})
+  }
+})
+
+test('--best accepts urls from --file (REQ-002)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'herlink-args-'))
+  try {
+    const filePath = path.join(dir, 'urls.txt')
+    fs.writeFileSync(filePath, 'https://example.com/v\n')
+    const result = await parseArgs(['--best', '--file', filePath])
+    assert.equal(result.error, undefined)
+    assert.deepEqual(result.urls, ['https://example.com/v'])
+    assert.equal(result.scriptable, 'best')
   } finally {
     fs.rmSync(dir, {recursive: true, force: true})
   }

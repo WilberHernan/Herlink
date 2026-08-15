@@ -32,11 +32,179 @@ test('runQueue probes and downloads a single item in order, aggregating the file
   assert.equal(outcome.cancelled, false)
 })
 
-test('runQueue retries with a fresh extraction when the cached-info download fails', async () => {
-  let downloads = 0
+test('runQueue processes items strictly in order, firing onItem per index (REQ-017)', async () => {
+  const order: string[] = []
+  const items: number[] = []
+  const outcome = await runQueue(
+    [{url: 'https://a.example/v'}, {url: 'https://b.example/v'}, {url: 'https://c.example/v'}],
+    {
+      ytdlp: 'yt-dlp',
+      outDir: '/tmp/Downloads',
+      ffmpeg: {available: false},
+      choiceFor: () => choice,
+      onItem: index => items.push(index),
+    },
+    {
+      probe: async (_ytdlp, url) => {
+        order.push(`probe:${url}`)
+        return {info: info(), infoJsonPath: '/tmp/info.json'}
+      },
+      download: async (opts: DownloadArgs & {ytdlp: string}) => {
+        order.push(`download:${opts.url}`)
+        return opts.url.includes('a.example') ? 'a.mp4' : opts.url.includes('b.example') ? 'b.mp4' : 'c.mp4'
+      },
+    },
+  )
+  assert.deepEqual(order, [
+    'probe:https://a.example/v',
+    'download:https://a.example/v',
+    'probe:https://b.example/v',
+    'download:https://b.example/v',
+    'probe:https://c.example/v',
+    'download:https://c.example/v',
+  ])
+  assert.deepEqual(items, [0, 1, 2])
+  assert.deepEqual(outcome.filepaths, ['a.mp4', 'b.mp4', 'c.mp4'])
+  assert.equal(outcome.cancelled, false)
+})
+
+test('runQueue records a mid-queue failure and continues with remaining items (REQ-017)', async () => {
+  const downloads: string[] = []
+  const outcome = await runQueue(
+    [{url: 'https://a.example/v'}, {url: 'https://b.example/v'}, {url: 'https://c.example/v'}],
+    {ytdlp: 'yt-dlp', outDir: '/tmp/Downloads', ffmpeg: {available: false}, choiceFor: () => choice},
+    {
+      probe: async () => ({info: info(), infoJsonPath: '/tmp/info.json'}),
+      download: async (opts: DownloadArgs & {ytdlp: string}) => {
+        downloads.push(opts.url)
+        if (opts.url.includes('b.example')) throw new Error('b roto')
+        return opts.url.includes('a.example') ? 'a.mp4' : 'c.mp4'
+      },
+    },
+  )
+  // b fails on both attempts (cached-info and fresh-extraction retry)
+  assert.deepEqual(downloads, [
+    'https://a.example/v',
+    'https://b.example/v',
+    'https://b.example/v',
+    'https://c.example/v',
+  ])
+  assert.deepEqual(outcome.filepaths, ['a.mp4', 'c.mp4'])
+  assert.equal(outcome.errors.length, 1)
+  assert.match(outcome.errors[0]!, /b roto/)
+})
+
+test('runQueue records a probe failure and continues with the remaining items (REQ-017)', async () => {
+  const downloads: string[] = []
+  const outcome = await runQueue(
+    [{url: 'https://a.example/v'}, {url: 'https://b.example/v'}, {url: 'https://c.example/v'}],
+    {ytdlp: 'yt-dlp', outDir: '/tmp/Downloads', ffmpeg: {available: false}, choiceFor: () => choice},
+    {
+      probe: async (_ytdlp, url) => {
+        if (url.includes('b.example')) throw new Error('probe b roto')
+        return {info: info(), infoJsonPath: '/tmp/info.json'}
+      },
+      download: async (opts: DownloadArgs & {ytdlp: string}) => {
+        downloads.push(opts.url)
+        return opts.url.includes('a.example') ? 'a.mp4' : 'c.mp4'
+      },
+    },
+  )
+  assert.deepEqual(downloads, ['https://a.example/v', 'https://c.example/v'])
+  assert.deepEqual(outcome.filepaths, ['a.mp4', 'c.mp4'])
+  assert.equal(outcome.errors.length, 1)
+  assert.match(outcome.errors[0]!, /probe b roto/)
+})
+
+test('runQueue cancel aborts the current item and skips the remaining queue, keeping finished files (REQ-017)', async () => {
+  const controller = new AbortController()
+  const downloads: string[] = []
+  const outcome = await runQueue(
+    [{url: 'https://a.example/v'}, {url: 'https://b.example/v'}, {url: 'https://c.example/v'}],
+    {
+      ytdlp: 'yt-dlp',
+      outDir: '/tmp/Downloads',
+      ffmpeg: {available: false},
+      choiceFor: () => choice,
+      signal: controller.signal,
+    },
+    {
+      probe: async () => ({info: info(), infoJsonPath: '/tmp/info.json'}),
+      download: async (opts: DownloadArgs & {ytdlp: string}) => {
+        downloads.push(opts.url)
+        if (opts.url.includes('b.example')) {
+          controller.abort()
+          throw new Error('aborted')
+        }
+        return opts.url.includes('a.example') ? 'a.mp4' : 'c.mp4'
+      },
+    },
+  )
+  assert.deepEqual(downloads, ['https://a.example/v', 'https://b.example/v'])
+  assert.deepEqual(outcome.filepaths, ['a.mp4'])
+  assert.equal(outcome.cancelled, true)
+  assert.equal(outcome.errors.length, 0)
+})
+
+test('runQueue awaits an async choiceFor — the TTY picker path resolves the download choice', async () => {
   const outcome = await runQueue(
     [{url: 'https://example.com/v'}],
-    {ytdlp: 'yt-dlp', outDir: '/tmp/Downloads', ffmpeg: {available: false}, choiceFor: () => choice},
+    {
+      ytdlp: 'yt-dlp',
+      outDir: '/tmp/Downloads',
+      ffmpeg: {available: false},
+      choiceFor: async () => choice,
+    },
+    {
+      probe: async () => ({info: info(), infoJsonPath: '/tmp/info.json'}),
+      download: async (opts: DownloadArgs & {ytdlp: string}) => {
+        assert.deepEqual(opts.choice.args, choice.args)
+        return '/tmp/Downloads/video.mp4'
+      },
+    },
+  )
+  assert.deepEqual(outcome.filepaths, ['/tmp/Downloads/video.mp4'])
+  assert.equal(outcome.cancelled, false)
+})
+
+test('runQueue treats a choiceFor cancel verdict as a queue cancel, keeping finished files', async () => {
+  let downloads = 0
+  const outcome = await runQueue(
+    [{url: 'https://a.example/v'}, {url: 'https://b.example/v'}],
+    {
+      ytdlp: 'yt-dlp',
+      outDir: '/tmp/Downloads',
+      ffmpeg: {available: false},
+      choiceFor: videoInfo => (videoInfo.title === 'primero' ? choice : 'cancel'),
+    },
+    {
+      probe: async (_ytdlp, url) => ({
+        info: info(url.includes('a.example') ? 'primero' : 'segundo'),
+        infoJsonPath: '/tmp/info.json',
+      }),
+      download: async () => {
+        downloads++
+        return '/tmp/Downloads/a.mp4'
+      },
+    },
+  )
+  assert.equal(downloads, 1)
+  assert.equal(outcome.cancelled, true)
+  assert.deepEqual(outcome.filepaths, ['/tmp/Downloads/a.mp4'])
+})
+
+test('runQueue retries with a fresh extraction when the cached-info download fails', async () => {
+  let downloads = 0
+  let retries = 0
+  const outcome = await runQueue(
+    [{url: 'https://example.com/v'}],
+    {
+      ytdlp: 'yt-dlp',
+      outDir: '/tmp/Downloads',
+      ffmpeg: {available: false},
+      choiceFor: () => choice,
+      onRetry: () => retries++,
+    },
     {
       probe: async () => ({info: info(), infoJsonPath: '/tmp/info.json'}),
       download: async (opts: DownloadArgs & {ytdlp: string}) => {
@@ -47,6 +215,7 @@ test('runQueue retries with a fresh extraction when the cached-info download fai
     },
   )
   assert.equal(downloads, 2)
+  assert.equal(retries, 1, 'onRetry must fire before the fresh-extraction attempt')
   assert.deepEqual(outcome.filepaths, ['/tmp/Downloads/video.mp4'])
   assert.equal(outcome.errors.length, 0)
 })
