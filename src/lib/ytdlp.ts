@@ -1,4 +1,5 @@
 import {spawn, type ChildProcess} from 'node:child_process'
+import {randomBytes} from 'node:crypto'
 import {createWriteStream} from 'node:fs'
 import fs from 'node:fs/promises'
 import os from 'node:os'
@@ -250,12 +251,17 @@ export async function probe(
   argv.push(url)
   const stdout = await new Promise<string>((resolve, reject) => {
     const child = spawn(ytdlp, argv, {signal})
+    activeChildren.add(child)
     let out = ''
     let stderr = ''
     child.stdout.on('data', chunk => (out += chunk))
     child.stderr.on('data', chunk => (stderr += chunk))
-    child.on('error', reject)
+    child.on('error', error => {
+      activeChildren.delete(child)
+      reject(error)
+    })
     child.on('close', code => {
+      activeChildren.delete(child)
       if (code !== 0) {
         reject(new Error(cleanYtDlpError(stderr) || `yt-dlp terminó con el código ${code}`))
       } else {
@@ -271,7 +277,12 @@ export async function probe(
     throw new Error('No se pudo leer la información del video de yt-dlp.')
   }
 
-  const infoJsonPath = path.join(os.tmpdir(), `herlink-info-${process.pid}-${Date.now()}.json`)
+  // nonce beyond pid+Date.now: two probes in the same millisecond write
+  // distinct tmpfiles, neither overwrites the other (REQ-par-002 s2)
+  const infoJsonPath = path.join(
+    os.tmpdir(),
+    `herlink-info-${process.pid}-${Date.now()}-${randomBytes(4).toString('hex')}.json`,
+  )
   await fs.writeFile(infoJsonPath, stdout)
   return {info, infoJsonPath}
 }
@@ -366,8 +377,16 @@ export type DownloadHandlers = {
 const PROGRESS_PREFIX = 'HERLINK|'
 const PROGRESS_TEMPLATE = `${PROGRESS_PREFIX}%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s`
 
-let activeChild: ChildProcess | undefined
-process.on('exit', () => activeChild?.kill('SIGTERM'))
+// every probe/download child tracked so process exit can kill ALL of them,
+// not just the last one (REQ-par-018) — closed children are removed from the
+// Set so a dead pid is never SIGTERM'd again (REQ-par-018 s2)
+const activeChildren = new Set<ChildProcess>()
+
+function killAllChildren(): void {
+  for (const child of activeChildren) child.kill('SIGTERM')
+}
+
+process.on('exit', killAllChildren)
 
 export type DownloadArgs = {
   url: string
@@ -449,7 +468,7 @@ export function download(
 
   return new Promise((resolve, reject) => {
     const child = spawn(opts.ytdlp, args, {signal})
-    activeChild = child
+    activeChildren.add(child)
 
     let stderr = ''
     let filepath = ''
@@ -497,9 +516,12 @@ export function download(
       }
     })
     child.stderr.on('data', chunk => (stderr += chunk))
-    child.on('error', reject)
+    child.on('error', error => {
+      activeChildren.delete(child)
+      reject(error)
+    })
     child.on('close', code => {
-      activeChild = undefined
+      activeChildren.delete(child)
       if (signal?.aborted) {
         // cancelled on purpose — don't leave half-written files behind
         void removePartials(destinations)

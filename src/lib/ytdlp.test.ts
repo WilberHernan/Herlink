@@ -9,6 +9,7 @@ import {
   bestChoice,
   buildChoices,
   buildDownloadArgs,
+  download,
   ensureYtDlp,
   findFfmpeg,
   isBundledBinary,
@@ -19,6 +20,7 @@ import {
   probe,
   removePartials,
   type DownloadChoice,
+  type DownloadHandlers,
   type VideoInfo,
 } from './ytdlp.js'
 import {playlistItems} from './queue.js'
@@ -55,6 +57,24 @@ function withPath(dir: string): () => void {
     if (prevPath === undefined) delete process.env.PATH
     else process.env.PATH = prevPath
   }
+}
+
+// Polls a marker file until it holds >= min non-empty lines, returning the
+// count. SIGTERM delivery to a fake child is asynchronous, so the kill-all
+// test polls instead of asserting immediately.
+async function waitForFileLines(file: string, min: number, timeoutMs = 5000): Promise<number> {
+  const deadline = Date.now() + timeoutMs
+  let count = 0
+  while (Date.now() < deadline) {
+    try {
+      count = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).length
+      if (count >= min) return count
+    } catch {
+      // marker file not written yet
+    }
+    await new Promise(resolve => setTimeout(resolve, 25))
+  }
+  throw new Error(`timeout: expected >= ${min} lines in ${file}, saw ${count}`)
 }
 
 test('ensureYtDlp() on Termux without yt-dlp errors and never downloads', async () => {
@@ -887,6 +907,104 @@ test('probe() passes --no-update to the yt-dlp argv (REQ-022)', async () => {
       else process.env.FAKE_ARGS_OUT = prev
     }
   } finally {
+    fs.rmSync(bin, {recursive: true, force: true})
+  }
+})
+
+test('process exit kills every live child and skips completed ones (REQ-par-018)', async () => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'herlink-bin-'))
+  const startedFile = path.join(bin, 'started.log')
+  const termFile = path.join(bin, 'term.log')
+  const prevStarted = process.env.FAKE_STARTED_FILE
+  const prevTerm = process.env.FAKE_TERM_FILE
+  const prevFast = process.env.FAKE_EXIT_FAST
+  try {
+    // fake yt-dlp as a real program (not a shell — Android mksh defers traps
+    // while waiting on a foreground child, so a shell fake would never
+    // observe SIGTERM in the test window): appends a "started" marker, traps
+    // SIGTERM into a "term" marker synchronously, exits fast (printing valid
+    // JSON) when FAKE_EXIT_FAST=1, else stays alive until the exit handler
+    // kills it
+    fs.writeFileSync(
+      path.join(bin, 'fake-ytdlp'),
+      [
+        '#!/data/data/com.termux/files/usr/bin/node',
+        'const fs = require("node:fs")',
+        'fs.appendFileSync(process.env.FAKE_STARTED_FILE, "started\\n")',
+        'process.on("SIGTERM", () => {',
+        '  fs.appendFileSync(process.env.FAKE_TERM_FILE, "term\\n")',
+        '  process.exit(0)',
+        '})',
+        'if (process.env.FAKE_EXIT_FAST === "1") {',
+        '  process.stdout.write(\'{"title":"fake"}\')',
+        '  process.exit(0)',
+        '}',
+        'setInterval(() => {}, 1000)',
+      ].join('\n'),
+      {mode: 0o755},
+    )
+    process.env.FAKE_STARTED_FILE = startedFile
+    process.env.FAKE_TERM_FILE = termFile
+    delete process.env.FAKE_EXIT_FAST
+
+    const fake = path.join(bin, 'fake-ytdlp')
+    // two children that must stay alive: one probe, one download
+    const aliveProbe = probe(fake, 'https://a.example/v').catch(() => {})
+    const aliveDownload = download(
+      {ytdlp: fake, url: 'https://b.example/v', choice, outDir: '/tmp/Downloads', ffmpeg: {available: false}},
+      {onProgress: noop, onProcessing: noop},
+    ).catch(() => {})
+    await waitForFileLines(startedFile, 2)
+
+    // one child that completes before the exit — its close must remove it
+    // from the Set so the exit handler never SIGTERMs a dead pid (s2)
+    process.env.FAKE_EXIT_FAST = '1'
+    const {infoJsonPath} = await probe(fake, 'https://c.example/v')
+    delete process.env.FAKE_EXIT_FAST
+    assert.equal(await waitForFileLines(startedFile, 3), 3)
+
+    process.emit('exit')
+
+    assert.equal(await waitForFileLines(termFile, 2), 2, 'both live children must receive SIGTERM')
+    const terms = fs.readFileSync(termFile, 'utf8').split('\n').filter(Boolean).length
+    assert.equal(terms, 2, 'the completed child must not be killed')
+    await aliveProbe
+    await aliveDownload
+    await fs.promises.rm(infoJsonPath, {force: true})
+  } finally {
+    if (prevStarted === undefined) delete process.env.FAKE_STARTED_FILE
+    else process.env.FAKE_STARTED_FILE = prevStarted
+    if (prevTerm === undefined) delete process.env.FAKE_TERM_FILE
+    else process.env.FAKE_TERM_FILE = prevTerm
+    if (prevFast === undefined) delete process.env.FAKE_EXIT_FAST
+    else process.env.FAKE_EXIT_FAST = prevFast
+    fs.rmSync(bin, {recursive: true, force: true})
+  }
+})
+
+test('probe() writes a nonced tmpfile so two same-ms probes never collide (REQ-par-002 s2)', async () => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'herlink-bin-'))
+  const nowMock = mock.method(Date, 'now', () => 1_700_000_000_000)
+  try {
+    fs.writeFileSync(path.join(bin, 'fake-ytdlp'), '#!/bin/sh\nprintf \'{"title":"fake"}\'\n', {mode: 0o755})
+    const [a, b] = await Promise.all([
+      probe(path.join(bin, 'fake-ytdlp'), 'https://a.example/v'),
+      probe(path.join(bin, 'fake-ytdlp'), 'https://b.example/v'),
+    ])
+    assert.notEqual(a.infoJsonPath, b.infoJsonPath, 'identical pid+ts must still yield distinct tmpfiles')
+    for (const {infoJsonPath} of [a, b]) {
+      assert.match(
+        path.basename(infoJsonPath),
+        new RegExp(`^herlink-info-${process.pid}-\\d+-[0-9a-f]{8}\\.json$`),
+        'tmpfile must carry pid, ts and an 8-hex nonce',
+      )
+      const parsed = JSON.parse(fs.readFileSync(infoJsonPath, 'utf8'))
+      assert.equal(parsed.title, 'fake', 'each probe must write its own parseable info file')
+    }
+    await fs.promises.rm(a.infoJsonPath, {force: true})
+    await fs.promises.rm(b.infoJsonPath, {force: true})
+  } finally {
+    nowMock.mock.restore()
     fs.rmSync(bin, {recursive: true, force: true})
   }
 })
