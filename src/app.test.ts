@@ -19,7 +19,7 @@ test('without -o the initial outDir is ~/Downloads', () => {
   assert.equal(resolveInitialOutDir(undefined, '/home/user'), path.join('/home/user', 'Downloads'))
 })
 
-test('App with initialUrls renders the probing phase showing the first url (REQ-015)', async () => {
+test('App with initialUrls opens the downloads screen showing init progress (REQ-par-001)', async () => {
   const previousForceColor = process.env.FORCE_COLOR
   const previousNoColor = process.env.NO_COLOR
   process.env.FORCE_COLOR = '3'
@@ -39,8 +39,9 @@ test('App with initialUrls renders the probing phase showing the first url (REQ-
         onOutcome: () => {},
       }),
     )
-    assert.match(output, /https:\/\/example\.com\/v/, 'the first queue url must appear in the probing phase')
-    assert.match(output, /preparando/, 'the probing status must show while the queue starts')
+    assert.match(output, /preparando/, 'the downloads screen must show while init starts')
+    // REQ-par-001: downloads run in the background, the input stays reachable
+    assert.match(output, /volver al input/, 'the downloads screen must offer the way back to the input')
   } finally {
     if (previousForceColor === undefined) delete process.env.FORCE_COLOR
     else process.env.FORCE_COLOR = previousForceColor

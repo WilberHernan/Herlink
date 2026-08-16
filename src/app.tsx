@@ -12,13 +12,13 @@ import {Shortcuts} from './components/shortcuts.js'
 import {TextInput} from './components/text-input.js'
 import {UnderlineInput, underlineButtonWidth} from './components/underline-input.js'
 import {clickTargetAt, findFrameRow, frameRowSpan, type ClickTarget} from './lib/click-map.js'
-import {formatBytes, formatDuration, formatEta, formatSpeed, shortenPath, truncate, wrapText} from './lib/format.js'
+import {formatBytes, formatDuration, formatSpeed, shortenPath, truncate, wrapText} from './lib/format.js'
 import {addToHistory, loadHistory} from './lib/history.js'
 import {detectPlatform, isProbablyUrl, type Platform} from './lib/platforms.js'
 import {isTermux, resolveOutDir} from './lib/termux.js'
 import {useMouseClick} from './lib/use-mouse-click.js'
 import {nextThemeMode, ThemeProvider, type ThemeMode, useTheme} from './theme.js'
-import {runQueue, type DoneInfo, type ItemStateStatus, type Outcome} from './lib/queue.js'
+import {createParallelQueue, type DoneInfo, type ItemStateStatus, type Outcome} from './lib/queue.js'
 export type {Outcome} from './lib/queue.js'
 import {
   buildChoices,
@@ -79,12 +79,6 @@ const Gap = ({lines = 1}: {lines?: number}) => (
 function partLabel(progress: DownloadProgress): string {
   // explains the bar resetting between files (video, then audio)
   return progress.totalParts > 1 ? `parte ${progress.part + 1}/${progress.totalParts}  ` : ''
-}
-
-function downloadMeta(progress: DownloadProgress): string {
-  const speed = progress.speed ? formatSpeed(progress.speed) : ''
-  const eta = progress.eta ? `${formatEta(progress.eta)} restante` : ''
-  return `${partLabel(progress)}${speed.padStart(10)}  ·  ${eta.padEnd(12)}`
 }
 
 function indeterminateMeta(progress: DownloadProgress): string {
@@ -206,36 +200,31 @@ export function createCachedInit<T>(run: () => Promise<T>): {get: () => Promise<
   }
 }
 
-type Phase =
-  | {name: 'input'; warning?: string}
-  | {name: 'probing'; status: string}
-  | {name: 'picking'}
-  | {
-      name: 'downloading'
-      choice: DownloadChoice
-      progress?: DownloadProgress
-      processing: boolean
-      refreshing?: boolean
-    }
-  | {name: 'done'; filepaths: string[]; cancelled: boolean}
-  | {name: 'error'; message: string}
+/** Short label per item status on the downloads screen (D4, REQ-par-006). */
+const STATUS_LABEL: Record<ItemStateStatus, string> = {
+  queued: 'en cola',
+  probing: 'obteniendo info…',
+  picking: 'eligiendo formato…',
+  downloading: 'descargando…',
+  processing: 'procesando…',
+  refreshing: 'enlace expirado…',
+  done: '✓',
+  error: '✗',
+}
 
-const HINTS: Record<Phase['name'], Array<[string, string]>> = {
+const HINTS: Record<Screen, Array<[string, string]>> = {
   input: [
     ['↵', 'bajar'],
     ['^c', 'salir'],
   ],
-  probing: [
-    ['esc', 'cancelar'],
-    ['^c', 'salir'],
-  ],
-  picking: [
+  picker: [
     ['↑↓', 'elegir'],
     ['↵', 'bajar'],
     ['esc', 'cancelar'],
     ['^c', 'salir'],
   ],
-  downloading: [
+  downloads: [
+    ['↵', 'volver al input'],
     ['esc', 'cancelar'],
     ['^c', 'salir'],
   ],
@@ -243,11 +232,11 @@ const HINTS: Record<Phase['name'], Array<[string, string]>> = {
     ['↵', 'volver'],
     ['^c', 'salir'],
   ],
-  error: [
-    ['↵', 'intentar de nuevo'],
-    ['^c', 'salir'],
-  ],
 }
+
+// everything the first submit needs before a queue can exist (D9)
+type InitContext = {ytdlp: string; ffmpeg: FfmpegStatus; noUpdate: boolean}
+type CachedInit<T> = ReturnType<typeof createCachedInit<T>>
 
 type AppProps = {
   initialUrls?: string[]
@@ -301,122 +290,138 @@ function AppContent({
   const theme = useTheme()
   const {exit} = useApp()
   const {stdout} = useStdout()
-  const [queue, setQueue] = useState<string[]>(initialUrls ?? [])
-  const [queueIndex, setQueueIndex] = useState(0)
-  const [url, setUrl] = useState(initialUrls?.[0] ?? '')
+  const [screen, setScreen] = useState<Screen>(initialUrls?.length ? 'downloads' : 'input')
+  // one row per link, keyed by itemId in insertion order (D5)
+  const [items, setItems] = useState<Map<string, ItemState>>(new Map())
+  const [doneInfo, setDoneInfo] = useState<DoneInfo>()
   const [urlInput, setUrlInput] = useState('')
   // -o override wins; ~/Downloads default, then shared storage on Termux once
   // resolveOutDir lands (effect below is skipped when the override is set)
   const [outDir, setOutDir] = useState(() => resolveInitialOutDir(outDirOverride, os.homedir()))
   const [history, setHistory] = useState(loadHistory)
-  const [platform, setPlatform] = useState<Platform>()
-  const [info, setInfo] = useState<VideoInfo>()
-  const [choices, setChoices] = useState<DownloadChoice[]>([])
-  // the "descargar los N videos" picker option, present only for playlists (REQ-018)
-  const [playlistChoice, setPlaylistChoice] = useState<{label: string; count?: number} | undefined>(undefined)
-  const ytdlpRef = useRef('')
+  // oldest open picker (FIFO); undefined when no item is waiting (REQ-par-005)
+  const [pickerItemId, setPickerItemId] = useState<string>()
+  const [warning, setWarning] = useState<string>()
+  // init progress line on the downloads screen while the first queue spins up
+  const [initStatus, setInitStatus] = useState<string>()
+
+  const queueRef = useRef<ReturnType<typeof createParallelQueue> | undefined>(undefined)
+  const initRef = useRef<CachedInit<InitContext> | undefined>(undefined)
+  // resolves each open picker's choiceFor promise once the user answers; esc
+  // resolves with 'cancel' so only that item skips (REQ-par-009)
+  const pickersRef = useRef(new Map<string, (choice: DownloadChoice | 'playlist' | 'cancel') => void>())
+  const pickInfosRef = useRef(new Map<string, VideoInfo>())
+  // itemId whose choiceFor is about to fire — set by the 'picking' event
+  const pickForRef = useRef<string | undefined>(undefined)
   const highlightRef = useRef(0) // choice under the cursor, for the ↵ hint click
-  const abortRef = useRef<AbortController | undefined>(undefined)
-  // resolves runQueue's per-item choiceFor promise once the picker answers
-  const pickRef = useRef<((choice: DownloadChoice | 'playlist' | 'cancel') => void) | undefined>(undefined)
-  const [phase, setPhase] = useState<Phase>(
-    initialUrls?.length ? {name: 'probing', status: 'preparando…'} : {name: 'input'},
-  )
+  const submittedRef = useRef<string[]>([])
 
   const columns = stdout?.columns && stdout.columns > 0 ? stdout.columns : 80
   const boxWidth = Math.max(14, Math.min(64, columns - 6))
   const contentWidth = Math.max(10, Math.min(columns - 4, 78))
 
-  const startQueue = useCallback(
-    async (urls: string[]) => {
-      const controller = new AbortController()
-      abortRef.current = controller
-      setQueue(urls)
-      setQueueIndex(0)
-      setUrl(urls[0] ?? '')
-      setPhase({name: 'probing', status: 'preparando…'})
-      try {
-        const ytdlp =
-          ytdlpRef.current ||
-          (await ensureYtDlp(status => setPhase({name: 'probing', status}), controller.signal))
+  // binary + ffmpeg init happens once per process, cached across runs
+  const getInit = useCallback((): CachedInit<InitContext> => {
+    if (!initRef.current) {
+      initRef.current = createCachedInit<InitContext>(async () => {
+        const ytdlp = await ensureYtDlp(setInitStatus)
         // herlink manages freshness of the bundled copy: silent -U once per run
         // (D11, REQ-020/021) and --no-update in probe/download args (REQ-022);
         // --no-update opts out; failure never blocks startup
         const bundled = isBundledBinary(ytdlp)
-        const effectiveNoUpdate_ = effectiveNoUpdate(noUpdate ?? false, ytdlp)
-        if (!ytdlpRef.current && !noUpdate && bundled) {
-          await maybeSelfUpdate(ytdlp, status => setPhase({name: 'probing', status}))
+        const noUpdate_ = effectiveNoUpdate(noUpdate ?? false, ytdlp)
+        if (!noUpdate && bundled) {
+          await maybeSelfUpdate(ytdlp, setInitStatus)
         }
-        ytdlpRef.current = ytdlp
-        if (controller.signal.aborted) return
-        setPhase({name: 'probing', status: 'obteniendo info del video…'})
-        const ffmpeg: FfmpegStatus = await findFfmpeg()
-        if (controller.signal.aborted) return
-        // the sequential queue driver (D9): probe → pick → download → next
-        // item, with React callbacks driving every phase transition
-        const outcome = await runQueue(
-          urls.map(url => ({url})),
-          {
-            ytdlp,
-            outDir,
-            ffmpeg,
-            resume,
-            cookies,
-            embedMetadata,
-            subs,
-            noUpdate: effectiveNoUpdate_,
-            signal: controller.signal,
-            onItem: index => {
-              setQueueIndex(index)
-              setUrl(urls[index]!)
-              setPlatform(detectPlatform(urls[index]!))
-              setPhase({name: 'probing', status: 'obteniendo info del video…'})
-            },
-            choiceFor: (videoInfo): Promise<DownloadChoice | 'playlist' | 'cancel'> => {
-              setInfo(videoInfo)
-              setChoices(buildChoices(videoInfo))
-              setPlaylistChoice(playlistOption(videoInfo))
-              highlightRef.current = 0
-              setPhase({name: 'picking'})
-              // the picker answers via handlePick; esc resolves 'cancel' (REQ-017)
-              return new Promise(resolve => {
-                pickRef.current = resolve
-              })
-            },
-            onProgress: progress =>
-              setPhase(prev => (prev.name === 'downloading' ? {...prev, progress, processing: false} : prev)),
-            onProcessing: () =>
-              setPhase(prev => (prev.name === 'downloading' ? {...prev, processing: true} : prev)),
-            onRetry: () =>
-              setPhase(prev =>
-                prev.name === 'downloading' ? {...prev, progress: undefined, refreshing: true} : prev,
-              ),
-          },
-        )
-        onOutcome(outcome)
-        if (!outcome.cancelled) for (const itemUrl of urls) setHistory(addToHistory(itemUrl))
-        if (outcome.cancelled) {
-          // remaining items skipped, already-downloaded files kept (REQ-017)
-          setPhase({name: 'done', filepaths: outcome.filepaths, cancelled: true})
-        } else if (outcome.errors.length > 0) {
-          setPhase({name: 'error', message: outcome.errors[0]!})
-        } else {
-          setPhase({name: 'done', filepaths: outcome.filepaths, cancelled: false})
+        const ffmpeg = await findFfmpeg()
+        setInitStatus(undefined)
+        return {ytdlp, ffmpeg, noUpdate: noUpdate_}
+      })
+    }
+    return initRef.current
+  }, [noUpdate])
+
+  // appends links to the live queue, or creates the queue on the first submit
+  const startItems = useCallback(
+    async (urls: string[]) => {
+      setWarning(undefined)
+      const existing = queueRef.current
+      if (existing) {
+        // REQ-par-001: back at the input mid-run, more links join the SAME pool
+        for (const url of urls) {
+          submittedRef.current.push(url)
+          const itemId = existing.start({url})
+          setItems(prev => new Map(prev).set(itemId, {status: 'queued', url}))
         }
+        return
+      }
+      setScreen('downloads')
+      let init: InitContext
+      try {
+        init = await getInit().get()
       } catch (error) {
-        if (controller.signal.aborted) {
-          setPhase({name: 'done', filepaths: [], cancelled: true})
-          return
-        }
-        setPhase({name: 'error', message: error instanceof Error ? error.message : String(error)})
+        setWarning(error instanceof Error ? error.message : String(error))
+        setScreen('input')
+        return
+      }
+      const runUrls = urls.slice()
+      const queue = createParallelQueue({
+        ytdlp: init.ytdlp,
+        outDir,
+        ffmpeg: init.ffmpeg,
+        resume,
+        cookies,
+        embedMetadata,
+        subs,
+        noUpdate: init.noUpdate,
+        onItemState: (itemId, status) => {
+          // the 'picking' event precedes the choiceFor callback; stash the
+          // itemId so choiceFor knows which row its picker belongs to
+          if (status === 'picking') pickForRef.current = itemId
+          setItems(prev => {
+            const row = prev.get(itemId)
+            if (!row) return prev
+            return new Map(prev).set(itemId, itemStateTransition(row, status))
+          })
+        },
+        onProgress: (itemId, progress) =>
+          setItems(prev => {
+            const row = prev.get(itemId)
+            if (!row) return prev
+            return new Map(prev).set(itemId, itemStateTransition(row, {type: 'progress', progress}))
+          }),
+        choiceFor: async info => {
+          const itemId = pickForRef.current
+          pickForRef.current = undefined
+          if (!itemId) return 'cancel'
+          pickInfosRef.current.set(itemId, info)
+          return new Promise(resolve => {
+            pickersRef.current.set(itemId, resolve)
+            setPickerItemId(prev => prev ?? itemId)
+          })
+        },
+        onAllDone: done => {
+          queueRef.current = undefined
+          // history gains the completed run's links, never a cancelled one
+          if (!done.cancelled) for (const itemUrl of runUrls) setHistory(addToHistory(itemUrl))
+          onOutcome(done)
+          setDoneInfo(done)
+          setScreen('done')
+        },
+      })
+      queueRef.current = queue
+      for (const url of urls) {
+        submittedRef.current.push(url)
+        const itemId = queue.start({url})
+        setItems(prev => new Map(prev).set(itemId, {status: 'queued', url}))
       }
     },
-    [outDir, resume, cookies, embedMetadata, subs, onOutcome],
+    [outDir, resume, cookies, embedMetadata, subs, getInit, onOutcome],
   )
 
   useEffect(() => {
-    if (initialUrls?.length) void startQueue(initialUrls)
-  }, [initialUrls, startQueue])
+    if (initialUrls?.length) void startItems(initialUrls)
+  }, [initialUrls, startItems])
 
   useEffect(() => {
     if (!isTermux() || outDirOverride) return
@@ -426,27 +431,49 @@ function AppContent({
     })
   }, [outDirOverride])
 
+  // early exit mid-run still reports the partial outcome (REQ-par-019); a
+  // finished run already reported via onAllDone, so queueRef is undefined here
+  useEffect(() => {
+    return () => {
+      if (queueRef.current) onOutcome(queueRef.current.currentOutcome())
+    }
+  }, [onOutcome])
+
+  // each picker starts at the first option
+  useEffect(() => {
+    highlightRef.current = 0
+  }, [pickerItemId])
+
   const resetToInput = useCallback(() => {
-    setQueue([])
-    setQueueIndex(0)
-    setUrl('')
+    // safe only from 'done' — the queue drained, nothing is running
+    setScreen('input')
+    setItems(new Map())
+    setDoneInfo(undefined)
+    setWarning(undefined)
+    setPickerItemId(undefined)
     setUrlInput('')
-    setPlatform(undefined)
-    setInfo(undefined)
-    setChoices([])
-    setPlaylistChoice(undefined)
-    setPhase({name: 'input'})
+    highlightRef.current = 0
+    submittedRef.current = []
+    pickersRef.current.clear()
+    pickInfosRef.current.clear()
   }, [])
 
-  // whole-queue cancel (REQ-017): abort the current item, resolve a pending
-  // pick with 'cancel' so runQueue skips the remaining items and keeps the
-  // files already downloaded
+  // cancels only the oldest open picker — siblings' signals stay untouched
+  const cancelPendingPick = useCallback(() => {
+    if (!pickerItemId) return
+    const resolve = pickersRef.current.get(pickerItemId)
+    if (resolve) resolve('cancel')
+    pickersRef.current.delete(pickerItemId)
+    pickInfosRef.current.delete(pickerItemId)
+    setPickerItemId(pickersRef.current.keys().next().value as string | undefined)
+  }, [pickerItemId])
+
+  // whole-run cancel (REQ-par-010): abort every item AND resolve the open
+  // picker, or onAllDone would wait on it forever (pendingPicks guard)
   const cancelRun = useCallback(() => {
-    abortRef.current?.abort()
-    pickRef.current?.('cancel')
-    pickRef.current = undefined
-    setUrlInput(url) // keep the link around so a cancel isn't destructive
-  }, [url])
+    queueRef.current?.cancelAll()
+    cancelPendingPick()
+  }, [cancelPendingPick])
 
   useInput(
     (input, key) => {
@@ -454,49 +481,67 @@ function AppContent({
         cycleTheme()
         return
       }
-      if (key.escape && (phase.name === 'error' || phase.name === 'done')) resetToInput()
-      if (key.escape && (phase.name === 'probing' || phase.name === 'downloading' || phase.name === 'picking')) {
-        cancelRun()
+      if (key.escape) {
+        if (screen === 'picker') cancelPendingPick()
+        else if (screen === 'downloads') cancelRun()
+        else if (screen === 'done') resetToInput()
+        return
       }
-      if (key.return && (phase.name === 'error' || phase.name === 'done')) resetToInput()
+      if (key.return) {
+        if (screen === 'done') resetToInput()
+        // REQ-par-001: downloads keep running, the input stays reachable
+        else if (screen === 'downloads') setScreen('input')
+        return
+      }
     },
     {isActive: Boolean(process.stdin.isTTY)},
   )
 
+  // one paste may carry several links (REQ-par-001); whitespace separates them
   const handleUrlSubmit = (value: string) => {
-    const trimmed = value.trim()
-    if (!isProbablyUrl(trimmed)) {
-      setPhase({name: 'input', warning: 'Eso no parece un enlace — pega una url completa'})
+    const urls = value
+      .trim()
+      .split(/\s+/)
+      .filter(url => isProbablyUrl(url))
+    if (urls.length === 0) {
+      setWarning('Eso no parece un enlace — pega una url completa')
       return
     }
-    void startQueue([trimmed])
+    void startItems(urls)
   }
 
   const clipboardOffered = Boolean(clipboardUrl) && urlInput === ''
   const clipboardAccepted = Boolean(clipboardUrl) && urlInput === clipboardUrl
 
+  // the visible picker's data — the FIFO head (REQ-par-005)
+  const pickerInfo = pickerItemId ? pickInfosRef.current.get(pickerItemId) : undefined
+  const pickerUrl = pickerItemId ? items.get(pickerItemId)?.url : undefined
+  const pickerPlatform = pickerUrl ? detectPlatform(pickerUrl) : undefined
+  const pickerChoices = pickerInfo ? buildChoices(pickerInfo) : []
+  const pickerPlaylist = pickerInfo ? playlistOption(pickerInfo) : undefined
+
   const handlePick = (item: {value: number}) => {
+    const itemId = pickerItemId
+    if (!itemId) return
+    const resolve = pickersRef.current.get(itemId)
+    if (!resolve) return
+    let choice: DownloadChoice | 'playlist' | 'cancel'
     if (item.value === PLAYLIST_CHOICE_VALUE) {
-      // "descargar los N videos" (REQ-018) — runQueue expands the probe into
-      // per-entry downloads; the synthetic choice only drives the header
-      pickRef.current?.('playlist')
-      pickRef.current = undefined
-      setPhase({
-        name: 'downloading',
-        choice: {label: playlistChoice?.label ?? 'descargar playlist', kind: 'video', args: []},
-        processing: false,
-      })
-      return
+      // "descargar los N videos" (REQ-018) — the driver expands the probe
+      choice = 'playlist'
+    } else {
+      const picked = pickerChoices[item.value]
+      if (!picked) return
+      choice = picked
     }
-    const choice = choices[item.value]
-    if (!choice) return
-    pickRef.current?.(choice)
-    pickRef.current = undefined
-    setPhase({name: 'downloading', choice, processing: false})
+    pickersRef.current.delete(itemId)
+    pickInfosRef.current.delete(itemId)
+    resolve(choice)
+    setPickerItemId(pickersRef.current.keys().next().value as string | undefined)
   }
 
-  let hints: Array<[string, string]> = [...HINTS[phase.name], ['^t', `tema:${theme.mode}`]]
-  if (phase.name === 'input' && history.length > 0) {
+  let hints: Array<[string, string]> = [...HINTS[screen], ['^t', `tema:${theme.mode}`]]
+  if (screen === 'input' && history.length > 0) {
     hints = [hints[0]!, ['↑', 'historial'], ...hints.slice(1)]
   }
 
@@ -506,34 +551,37 @@ function AppContent({
   const hintAction = (key: string): (() => void) | undefined => {
     if (key === '^c') return () => exit()
     if (key === '^t') return cycleTheme
-    if (key === 'esc')
-      return phase.name === 'probing' || phase.name === 'downloading' || phase.name === 'picking'
-        ? cancelRun
-        : resetToInput
+    if (key === 'esc') {
+      if (screen === 'picker') return cancelPendingPick
+      if (screen === 'downloads') return cancelRun
+      if (screen === 'done') return resetToInput
+      return undefined
+    }
     if (key === '↵') {
-      if (phase.name === 'input') return () => handleUrlSubmit(urlInput)
-      if (phase.name === 'picking') return () => handlePick({value: highlightRef.current})
-      if (phase.name === 'error' || phase.name === 'done') return resetToInput
+      if (screen === 'input') return () => handleUrlSubmit(urlInput)
+      if (screen === 'picker') return () => handlePick({value: highlightRef.current})
+      if (screen === 'downloads') return () => setScreen('input')
+      if (screen === 'done') return resetToInput
     }
     return undefined // ↑↓ / ↑ stay keyboard-only
   }
   const clickTargets: ClickTarget[] = []
-  if (phase.name === 'input') {
+  if (screen === 'input') {
     // the arrow glyph is the whole button: a single `➜` on the input row
     clickTargets.push({match: '➜', action: () => handleUrlSubmit(urlInput)})
   }
-  if (phase.name === 'picking') {
-    for (const [index, choice] of choices.entries()) {
+  if (screen === 'picker') {
+    for (const [index, choice] of pickerChoices.entries()) {
       clickTargets.push({match: choiceLabel(choice), action: () => handlePick({value: index})})
     }
-    if (playlistChoice) {
+    if (pickerPlaylist) {
       clickTargets.push({
-        match: choiceLabel({kind: 'video', label: playlistChoice.label, args: []}),
+        match: choiceLabel({kind: 'video', label: pickerPlaylist.label, args: []}),
         action: () => handlePick({value: PLAYLIST_CHOICE_VALUE}),
       })
     }
   }
-  // done phase: no visible action — Enter returns to the start (see HINTS + useInput)
+  // done screen: no visible action — Enter returns to the start (see HINTS + useInput)
   for (const [key, label] of hints) {
     const action = hintAction(key)
     if (action) clickTargets.push({match: `${key} ${label}`, action})
@@ -552,8 +600,9 @@ function AppContent({
       if (inLogo) {
         const span = frameRowSpan(y - 1)
         if (span && x >= span[0] - 1 && x <= span[1] + 1) {
-          if (phase.name === 'probing' || phase.name === 'downloading' || phase.name === 'picking') cancelRun()
-          else if (phase.name !== 'input') resetToInput()
+          if (screen === 'picker') cancelPendingPick()
+          else if (screen === 'downloads') cancelRun()
+          else if (screen === 'done') resetToInput()
           return
         }
       }
@@ -561,6 +610,56 @@ function AppContent({
     },
     Boolean(process.stdin.isTTY),
   )
+
+  const doneSummaryInfo = screen === 'done' && doneInfo ? doneSummary(doneInfo) : undefined
+  const queuedCount = Array.from(items.values()).filter(item => item.status === 'queued').length
+
+  const rowColor = (status: ItemStateStatus) => {
+    switch (status) {
+      case 'done':
+        return theme.success
+      case 'error':
+        return theme.error
+      case 'picking':
+        return theme.accent
+      case 'refreshing':
+        return theme.warning
+      case 'downloading':
+        return theme.text
+      default:
+        return theme.muted
+    }
+  }
+
+  const rowDetail = (item: ItemState) => {
+    if (item.status === 'downloading' && item.progress) {
+      if (item.progress.totalBytes) {
+        return <ProgressBar percent={item.progress.downloadedBytes / item.progress.totalBytes} />
+      }
+      return <Text color={theme.muted}>{indeterminateMeta(item.progress)}</Text>
+    }
+    if (item.status === 'processing') {
+      return (
+        <Text>
+          <Text color={theme.accent}>
+            <Spinner type="dots" />
+          </Text>
+          <Text color={theme.muted}> procesando…</Text>
+        </Text>
+      )
+    }
+    if (item.status === 'refreshing') {
+      return (
+        <Text>
+          <Text color={theme.accent}>
+            <Spinner type="dots" />
+          </Text>
+          <Text color={theme.muted}> Enlace expirado — obteniendo uno nuevo…</Text>
+        </Text>
+      )
+    }
+    return null
+  }
 
   return (
     <FullScreen>
@@ -572,7 +671,7 @@ function AppContent({
       </Box>
       <Gap lines={3} />
 
-      {phase.name === 'input' && (
+      {screen === 'input' && (
         <Box flexDirection="column" alignItems="center">
           <UnderlineInput width={boxWidth} button={ACTION_LABEL}>
             <TextInput
@@ -588,8 +687,8 @@ function AppContent({
               }}
             />
           </UnderlineInput>
-          {phase.warning ? (
-            <Text color={theme.warning}>✗ {phase.warning}</Text>
+          {warning ? (
+            <Text color={theme.warning}>✗ {warning}</Text>
           ) : clipboardOffered ? (
             <Text color={theme.muted}>Hay un enlace en tu portapapeles — ⇥ para pegarlo</Text>
           ) : clipboardAccepted ? (
@@ -598,35 +697,21 @@ function AppContent({
         </Box>
       )}
 
-      {phase.name === 'probing' && (
-        <Box flexDirection="column" alignItems="center">
-          <UnderlineInput
-            width={boxWidth}
-            button={ACTION_LABEL}
-            buttonDim
-          >
-            <Text color={theme.text}>
-              {url.length > boxWidth - 14 ? `${url.slice(0, boxWidth - 15)}…` : url}
-            </Text>
-          </UnderlineInput>
-        </Box>
-      )}
-
-      {phase.name === 'picking' && platform && (
+      {screen === 'picker' && pickerItemId && pickerInfo && (
         <Box width={contentWidth}>
           <Box flexDirection="column" flexGrow={1} flexBasis={0} justifyContent="center" paddingRight={3}>
             {/* wrapped by hand so continuation lines stay flush left —
                 ink's wrapping keeps the break's space as a 1-cell indent */}
-            {wrapText(info?.title ?? '', Math.max(10, contentWidth - 41)).map((line, index) => (
+            {wrapText(pickerInfo.title ?? '', Math.max(10, contentWidth - 41)).map((line, index) => (
               <Text key={index} bold color={theme.emphasized}>
                 {line}
               </Text>
             ))}
             <Gap />
             <Text color={theme.muted}>
-              ▸ {platform.label}
-              {info?.duration ? ` · ${formatDuration(info.duration)}` : ''}
-              {info?.uploader ? ` · ${info.uploader}` : ''}
+              ▸ {pickerPlatform?.label ?? 'enlace'}
+              {pickerInfo.duration ? ` · ${formatDuration(pickerInfo.duration)}` : ''}
+              {pickerInfo.uploader ? ` · ${pickerInfo.uploader}` : ''}
             </Text>
           </Box>
           <Panel title="Descargar" width={38}>
@@ -634,17 +719,17 @@ function AppContent({
               indicatorComponent={ChoiceIndicator}
               itemComponent={ChoiceItem}
               items={[
-                ...choices.map((choice, index) => ({
+                ...pickerChoices.map((choice, index) => ({
                   key: String(index),
                   label: choiceLabel(choice),
                   value: index,
                 })),
                 // REQ-018: playlist option alongside the format choices
-                ...(playlistChoice
+                ...(pickerPlaylist
                   ? [
                       {
                         key: 'playlist',
-                        label: choiceLabel({kind: 'video', label: playlistChoice.label, args: []}),
+                        label: choiceLabel({kind: 'video', label: pickerPlaylist.label, args: []}),
                         value: PLAYLIST_CHOICE_VALUE,
                       },
                     ]
@@ -657,111 +742,65 @@ function AppContent({
         </Box>
       )}
 
-      {phase.name === 'downloading' && (
-        <Box flexDirection="column" alignItems="center">
-          <Text color={theme.emphasized}>
-            {queue.length > 1 ? <Text color={theme.muted}>video {queueIndex + 1}/{queue.length} · </Text> : null}
-            {info?.title ? `${truncate(info.title, 42)} · ` : ''}
-            {phase.choice.label}
-          </Text>
-          <Gap />
-          {/* every branch is exactly three rows — bar, gap, meta — so the layout never jumps */}
-          {phase.processing ? (
-            <>
-              <ProgressBar percent={1} />
-              <Gap />
-              <Text>
-                <Text color={theme.accent}>
-                  <Spinner type="dots" />
-                </Text>
-                <Text color={theme.muted}> procesando…</Text>
+      {screen === 'downloads' && (
+        <Box flexDirection="column" alignItems="center" width={contentWidth}>
+          {items.size === 0 ? (
+            <Text>
+              <Text color={theme.accent}>
+                <Spinner type="dots" />
               </Text>
-            </>
-          ) : phase.progress?.totalBytes ? (
-            <>
-              <ProgressBar percent={phase.progress.downloadedBytes / phase.progress.totalBytes} />
-              <Gap />
-              <Text color={theme.muted}>{downloadMeta(phase.progress)}</Text>
-            </>
-          ) : phase.progress ? (
-            <>
-              <Text>
-                <Text color={theme.accent}>
-                  <Spinner type="dots" />
-                </Text>
-                <Text color={theme.muted}> descargando…</Text>
-              </Text>
-              <Gap />
-              <Text color={theme.muted}>{indeterminateMeta(phase.progress)}</Text>
-            </>
+              <Text color={theme.muted}> {initStatus ?? 'preparando…'}</Text>
+            </Text>
           ) : (
             <>
-              <ProgressBar percent={0} />
-              <Gap />
-              <Text>
-                <Text color={theme.accent}>
-                  <Spinner type="dots" />
-                </Text>
-                <Text color={theme.muted}>
-                  {phase.refreshing ? ' Enlace expirado — obteniendo uno nuevo…' : ' Comenzando descarga…'}
-                </Text>
-              </Text>
+              {Array.from(items.entries()).map(([itemId, item]) => (
+                <Box key={itemId} flexDirection="column" width={boxWidth}>
+                  <Box justifyContent="space-between">
+                    <Text color={theme.muted}>{truncate(item.url, 40)}</Text>
+                    <Text bold color={rowColor(item.status)}>
+                      {STATUS_LABEL[item.status]}
+                    </Text>
+                  </Box>
+                  {rowDetail(item)}
+                </Box>
+              ))}
+              {queuedCount > 0 && (
+                <>
+                  <Gap lines={1} />
+                  <Text color={theme.muted}>{queuedCount} en cola</Text>
+                </>
+              )}
             </>
           )}
         </Box>
       )}
 
-      {phase.name === 'done' && (
+      {screen === 'done' && doneInfo && doneSummaryInfo && (
         <Box flexDirection="column" alignItems="center">
           <Text>
-            {phase.cancelled ? (
-              <Text bold color={theme.warning}>✗ Cancelado </Text>
-            ) : phase.filepaths.length > 1 ? (
-              <Text bold color={theme.success}>✓ Descargados {phase.filepaths.length} archivos </Text>
-            ) : (
-              <Text bold color={theme.success}>✓ Descargado </Text>
-            )}
-            <Text color={theme.muted}>
-              {phase.cancelled
-                ? phase.filepaths.length > 0
-                  ? 'Se guardaron los archivos ya descargados:'
-                  : 'No se descargó ningún archivo'
-                : phase.filepaths.length > 1
-                  ? 'Están en:'
-                  : 'Tu archivo está en:'}
+            <Text bold color={doneInfo.cancelled ? theme.warning : theme.success}>
+              {doneSummaryInfo.heading}{' '}
             </Text>
+            <Text color={theme.muted}>{doneSummaryInfo.sub}</Text>
           </Text>
           <Gap />
-          {phase.filepaths.map(filepath => (
+          {doneInfo.filepaths.map(filepath => (
             <Text key={filepath} color={theme.info}>
               {shortenPath(filepath, os.homedir(), 60)}
             </Text>
           ))}
-        </Box>
-      )}
-
-      {phase.name === 'error' && (
-        <Box flexDirection="column" alignItems="center" width={Math.max(10, Math.min(columns - 6, 72))}>
-          <Text color={theme.error}>✗ {phase.message}</Text>
+          {doneSummaryInfo.errors.map((error, index) => (
+            <Text key={index} color={theme.error}>
+              ✗ {error}
+            </Text>
+          ))}
         </Box>
       )}
 
       {hints.length > 0 ? (
         <>
           <Gap lines={4} />
-          <Shortcuts
-            items={hints}
-            leading={
-              phase.name === 'probing' ? (
-                <Text>
-                  <Text color={theme.accent}>
-                    <Spinner type="dots" />
-                  </Text>
-                  <Text color={theme.muted}> {phase.status}</Text>
-                </Text>
-              ) : undefined
-            }
-          />
+          <Shortcuts items={hints} />
         </>
       ) : null}
     </FullScreen>
