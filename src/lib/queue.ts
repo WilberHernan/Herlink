@@ -60,122 +60,93 @@ export type QueueRunOptions = {
   onStatus?: (message: string) => void
 }
 
+export type ItemResult = {filepaths: string[]; errors: string[]; cancelled: boolean}
+
+/** Per-item callbacks threaded through runItem (D2): drivers bind their own
+ * progress/processing/retry handlers — runQueue from opts, parallelQueue per
+ * itemId. */
+export type ItemHooks = {
+  onRetry?: () => void // fired before the fresh-extraction retry
+  onProgress?: (progress: DownloadProgress) => void
+  onProcessing?: () => void
+}
+
 /**
- * Sequential download driver shared by the TTY app, batch and scriptable
- * paths (D9). Probes each item, asks the caller for a choice, downloads with
- * the probe's cached info and retries with a fresh extraction when that
- * expires (mirrors the previous app.tsx behavior).
+ * Shared per-item pipeline (D2): probe → choiceFor → playlist-expand →
+ * per-entry download → fresh-extraction retry, with per-entry isolation.
+ * `signal` is the abort source for THIS item — runQueue passes opts.signal,
+ * parallelQueue passes the item's controller.signal. Drivers interpret the
+ * result: runQueue maps an item cancel to `cancelled=true, break`
+ * (byte-identical legacy behavior); parallelQueue maps it to an item-only
+ * cancel. playlistIndex items always re-extract — the probe's infoJsonPath is
+ * never reused for playlist entries (REQ-019).
  */
-export async function runQueue(
-  items: QueueItem[],
+export async function runItem(
+  item: QueueItem,
   opts: QueueRunOptions,
+  signal: AbortSignal | undefined,
+  hooks: ItemHooks,
   deps: QueueDeps = {},
-): Promise<QueueOutcome> {
+): Promise<ItemResult> {
   const doProbe = deps.probe ?? probe
   const doDownload = deps.download ?? download
   const filepaths: string[] = []
   const errors: string[] = []
   let cancelled = false
 
-  for (const [index, item] of items.entries()) {
-    if (opts.signal?.aborted) {
+  if (signal?.aborted) {
+    cancelled = true
+    return {filepaths, errors, cancelled}
+  }
+  let info: VideoInfo
+  let infoJsonPath: string | undefined
+  try {
+    const result = await doProbe(opts.ytdlp, item.url, signal, opts.cookies, opts.noUpdate)
+    info = result.info
+    infoJsonPath = result.infoJsonPath
+  } catch (error) {
+    if (signal?.aborted) {
       cancelled = true
-      break
+      return {filepaths, errors, cancelled}
     }
-    opts.onItem?.(index)
-    let info: VideoInfo
-    let infoJsonPath: string | undefined
-    try {
-      const result = await doProbe(opts.ytdlp, item.url, opts.signal, opts.cookies, opts.noUpdate)
-      info = result.info
-      infoJsonPath = result.infoJsonPath
-    } catch (error) {
-      if (opts.signal?.aborted) {
-        cancelled = true
-        break
-      }
-      errors.push(error instanceof Error ? error.message : String(error))
-      continue
+    errors.push(error instanceof Error ? error.message : String(error))
+    return {filepaths, errors, cancelled}
+  }
+  if (signal?.aborted) {
+    cancelled = true
+    return {filepaths, errors, cancelled}
+  }
+  const choice = await opts.choiceFor(info)
+  if (choice === 'cancel' || signal?.aborted) {
+    cancelled = true
+    return {filepaths, errors, cancelled}
+  }
+  if (choice === 'pick') {
+    // TTY-deferred — the app resolves the pick before calling runQueue (T5)
+    errors.push(`“${item.url}”: el selector interactivo no está disponible en este modo`)
+    return {filepaths, errors, cancelled}
+  }
+  const handlers: DownloadHandlers = {
+    onProgress: hooks.onProgress ?? (() => {}),
+    onProcessing: hooks.onProcessing ?? (() => {}),
+  }
+  if (choice === 'playlist') {
+    // "descargar los N videos" (REQ-018): iterate every entry with a fresh
+    // extraction per entry — the probe's infoJsonPath is never reused for
+    // playlist items (REQ-019). The option carries no format choice, so
+    // entries download with the best available format (like --best).
+    if (!isPlaylistInfo(info)) {
+      errors.push(`“${item.url}”: no se pudo detectar una playlist`)
+      return {filepaths, errors, cancelled}
     }
-    if (opts.signal?.aborted) {
-      cancelled = true
-      break
+    const count = info.playlist_count
+    if (typeof count === 'number' && count === 0) {
+      errors.push(`“${item.url}”: la playlist no tiene videos`)
+      return {filepaths, errors, cancelled}
     }
-    const choice = await opts.choiceFor(info)
-    if (choice === 'cancel' || opts.signal?.aborted) {
-      cancelled = true
-      break
-    }
-    if (choice === 'pick') {
-      // TTY-deferred — the app resolves the pick before calling runQueue (T5)
-      errors.push(`“${item.url}”: el selector interactivo no está disponible en este modo`)
-      continue
-    }
-    const handlers: DownloadHandlers = {
-      onProgress: opts.onProgress ?? (() => {}),
-      onProcessing: opts.onProcessing ?? (() => {}),
-    }
-    if (choice === 'playlist') {
-      // "descargar los N videos" (REQ-018): iterate every entry with a fresh
-      // extraction per entry — the probe's infoJsonPath is never reused for
-      // playlist items (REQ-019). The option carries no format choice, so
-      // entries download with the best available format (like --best).
-      if (!isPlaylistInfo(info)) {
-        errors.push(`“${item.url}”: no se pudo detectar una playlist`)
-        continue
-      }
-      const count = info.playlist_count
-      if (typeof count === 'number' && count === 0) {
-        errors.push(`“${item.url}”: la playlist no tiene videos`)
-        continue
-      }
-      const entryBase = {
-        ytdlp: opts.ytdlp,
-        choice: bestChoice(info),
-        outDir: opts.outDir,
-        ffmpeg: opts.ffmpeg,
-        resume: opts.resume,
-        cookies: opts.cookies,
-        embedMetadata: opts.embedMetadata,
-        subs: opts.subs,
-        noUpdate: opts.noUpdate,
-      }
-      if (typeof count === 'number' && count > 0) {
-        for (let i = 1; i <= count; i++) {
-          if (opts.signal?.aborted) {
-            cancelled = true
-            break
-          }
-          try {
-            filepaths.push(
-              await doDownload({...entryBase, url: item.url, playlist: true, playlistIndex: i}, handlers, opts.signal),
-            )
-          } catch (error) {
-            if (opts.signal?.aborted) {
-              cancelled = true
-              break
-            }
-            // per-entry error isolation — remaining entries continue (REQ-019)
-            errors.push(error instanceof Error ? error.message : String(error))
-          }
-        }
-      } else {
-        // D13: playlist_count unknown — single yt-dlp run, no per-entry isolation
-        try {
-          filepaths.push(await doDownload({...entryBase, url: item.url, playlist: true}, handlers, opts.signal))
-        } catch (error) {
-          if (opts.signal?.aborted) {
-            cancelled = true
-            break
-          }
-          errors.push(error instanceof Error ? error.message : String(error))
-        }
-      }
-      continue
-    }
-    const base = {
+    const entryBase = {
       ytdlp: opts.ytdlp,
-      choice,
+      choice: bestChoice(info),
       outDir: opts.outDir,
       ffmpeg: opts.ffmpeg,
       resume: opts.resume,
@@ -184,38 +155,120 @@ export async function runQueue(
       subs: opts.subs,
       noUpdate: opts.noUpdate,
     }
-    try {
-      // playlist items (playlistIndex) always re-extract — never reuse the
-      // probe's infoJsonPath (REQ-019)
-      filepaths.push(
-        await doDownload(
-          {...base, url: item.url, ...(item.playlistIndex ? {playlistIndex: item.playlistIndex} : {infoJsonPath})},
-          handlers,
-          opts.signal,
-        ),
-      )
-    } catch (error) {
-      if (opts.signal?.aborted) {
-        cancelled = true
-        break
-      }
-      // media urls in the cached info can expire — retry with a fresh extraction
-      opts.onRetry?.()
-      try {
-        filepaths.push(
-          await doDownload(
-            {...base, url: item.url, ...(item.playlistIndex ? {playlistIndex: item.playlistIndex} : {})},
-            handlers,
-            opts.signal,
-          ),
-        )
-      } catch (error2) {
-        if (opts.signal?.aborted) {
+    if (typeof count === 'number' && count > 0) {
+      for (let i = 1; i <= count; i++) {
+        if (signal?.aborted) {
           cancelled = true
           break
         }
-        errors.push(error2 instanceof Error ? error2.message : String(error2))
+        try {
+          filepaths.push(
+            await doDownload({...entryBase, url: item.url, playlist: true, playlistIndex: i}, handlers, signal),
+          )
+        } catch (error) {
+          if (signal?.aborted) {
+            cancelled = true
+            break
+          }
+          // per-entry error isolation — remaining entries continue (REQ-019)
+          errors.push(error instanceof Error ? error.message : String(error))
+        }
       }
+    } else {
+      // D13: playlist_count unknown — single yt-dlp run, no per-entry isolation
+      try {
+        filepaths.push(await doDownload({...entryBase, url: item.url, playlist: true}, handlers, signal))
+      } catch (error) {
+        if (signal?.aborted) {
+          cancelled = true
+          return {filepaths, errors, cancelled}
+        }
+        errors.push(error instanceof Error ? error.message : String(error))
+      }
+    }
+    return {filepaths, errors, cancelled}
+  }
+  const base = {
+    ytdlp: opts.ytdlp,
+    choice,
+    outDir: opts.outDir,
+    ffmpeg: opts.ffmpeg,
+    resume: opts.resume,
+    cookies: opts.cookies,
+    embedMetadata: opts.embedMetadata,
+    subs: opts.subs,
+    noUpdate: opts.noUpdate,
+  }
+  try {
+    // playlist items (playlistIndex) always re-extract — never reuse the
+    // probe's infoJsonPath (REQ-019)
+    filepaths.push(
+      await doDownload(
+        {...base, url: item.url, ...(item.playlistIndex ? {playlistIndex: item.playlistIndex} : {infoJsonPath})},
+        handlers,
+        signal,
+      ),
+    )
+  } catch (error) {
+    if (signal?.aborted) {
+      cancelled = true
+      return {filepaths, errors, cancelled}
+    }
+    // media urls in the cached info can expire — retry with a fresh extraction
+    hooks.onRetry?.()
+    try {
+      filepaths.push(
+        await doDownload(
+          {...base, url: item.url, ...(item.playlistIndex ? {playlistIndex: item.playlistIndex} : {})},
+          handlers,
+          signal,
+        ),
+      )
+    } catch (error2) {
+      if (signal?.aborted) {
+        cancelled = true
+        return {filepaths, errors, cancelled}
+      }
+      errors.push(error2 instanceof Error ? error2.message : String(error2))
+    }
+  }
+  return {filepaths, errors, cancelled}
+}
+
+/**
+ * Sequential download driver shared by the TTY app, batch and scriptable
+ * paths (D9). Probes each item, asks the caller for a choice, downloads with
+ * the probe's cached info and retries with a fresh extraction when that
+ * expires (mirrors the previous app.tsx behavior). Each item runs through the
+ * shared runItem pipeline (D2); an item cancel aborts the whole queue.
+ */
+export async function runQueue(
+  items: QueueItem[],
+  opts: QueueRunOptions,
+  deps: QueueDeps = {},
+): Promise<QueueOutcome> {
+  const filepaths: string[] = []
+  const errors: string[] = []
+  let cancelled = false
+
+  const hooks: ItemHooks = {
+    onRetry: opts.onRetry,
+    onProgress: opts.onProgress,
+    onProcessing: opts.onProcessing,
+  }
+
+  for (const [index, item] of items.entries()) {
+    if (opts.signal?.aborted) {
+      cancelled = true
+      break
+    }
+    opts.onItem?.(index)
+    const result = await runItem(item, opts, opts.signal, hooks, deps)
+    filepaths.push(...result.filepaths)
+    errors.push(...result.errors)
+    if (result.cancelled) {
+      cancelled = true
+      break
     }
   }
 
