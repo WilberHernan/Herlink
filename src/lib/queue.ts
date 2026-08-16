@@ -320,6 +320,8 @@ export type ParallelQueue = {
   currentOutcome: () => DoneInfo
   /** True while any item is running or queued. */
   hasActive: () => boolean
+  /** Number of items whose picker is open — the onAllDone deferral guard (REQ-par-017). */
+  pendingPicks: () => number
 }
 
 type ParallelQueueEntry = {item: QueueItem; itemId: string; controller: AbortController}
@@ -342,6 +344,10 @@ export function createParallelQueue(opts: ParallelQueueOptions): ParallelQueue {
   const controllers = new Map<string, AbortController>()
   const outcome: DoneInfo = {filepaths: [], errors: [], cancelled: false, aborted: false}
   let nextId = 0
+  // open pickers — onAllDone defers while > 0 (REQ-par-017, D10)
+  let pendingPicks = 0
+  // one-shot guard — fires onAllDone at most once per queue instance (REQ-par-004)
+  let drained = false
 
   const baseRunOpts: Omit<QueueRunOptions, 'choiceFor'> = {
     ytdlp: opts.ytdlp,
@@ -369,9 +375,15 @@ export function createParallelQueue(opts: ParallelQueueOptions): ParallelQueue {
       ...baseRunOpts,
       choiceFor: async info => {
         opts.onItemState(entry.itemId, 'picking')
-        const result = await opts.choiceFor(info)
-        if (result !== 'cancel') opts.onItemState(entry.itemId, 'downloading')
-        return result
+        // the picker is open — onAllDone must wait for this item (REQ-par-017)
+        pendingPicks++
+        try {
+          const result = await opts.choiceFor(info)
+          if (result !== 'cancel') opts.onItemState(entry.itemId, 'downloading')
+          return result
+        } finally {
+          pendingPicks--
+        }
       },
     }
     void (async () => {
@@ -397,6 +409,18 @@ export function createParallelQueue(opts: ParallelQueueOptions): ParallelQueue {
   function pump(): void {
     while (active.size < cap && queue.length > 0) {
       runTask(queue.shift()!)
+    }
+    checkDrained()
+  }
+
+  // onAllDone fires exactly once when nothing runs and no picker is open —
+  // active===0 implies the FIFO queue is empty because pump() fills every free
+  // slot, so the queue needs no separate check (REQ-par-004/014, D10)
+  function checkDrained(): void {
+    if (drained) return
+    if (active.size === 0 && pendingPicks === 0) {
+      drained = true
+      opts.onAllDone(currentOutcome())
     }
   }
 
@@ -430,7 +454,11 @@ export function createParallelQueue(opts: ParallelQueueOptions): ParallelQueue {
     return active.size > 0 || queue.length > 0
   }
 
-  return {start, cancelAll, currentOutcome, hasActive}
+  function pendingPicksCount(): number {
+    return pendingPicks
+  }
+
+  return {start, cancelAll, currentOutcome, hasActive, pendingPicks: pendingPicksCount}
 }
 
 export type ScriptableOptions = {

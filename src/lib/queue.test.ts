@@ -5,7 +5,7 @@ import path from 'node:path'
 import {mock} from 'node:test'
 import test from 'node:test'
 import {createParallelQueue, runQueue, runScriptable} from './queue.js'
-import type {ParallelQueue, ParallelQueueOptions, QueueDeps} from './queue.js'
+import type {DoneInfo, ParallelQueue, ParallelQueueOptions, QueueDeps} from './queue.js'
 import {removePartials} from './ytdlp.js'
 import type {DownloadArgs, DownloadChoice, VideoInfo} from './ytdlp.js'
 
@@ -829,4 +829,233 @@ test('parallelQueue and runQueue are isolated — a parallel run leaves no state
   assert.equal(seqOutcome.cancelled, false)
   assert.equal(pq.currentOutcome().filepaths.length, 4, 'parallel outcome must survive the sequential run')
   assert.equal(pq.hasActive(), false)
+})
+
+// ── parallelQueue T3b: onAllDone aggregation, picker deferral, playlist slot ──
+
+test('parallelQueue fires onAllDone exactly once when drained, aggregating every item (REQ-par-004)', async () => {
+  const urls = ['a', 'b', 'c', 'd', 'e'].map(host => `https://${host}.example/v`)
+  const gates = new Map<string, Deferred<string>>()
+  const doneCalls: DoneInfo[] = []
+  let inFlight = 0
+  const queue = makeParallelQueue(
+    {
+      probe: async (_ytdlp, url) => ({info: info(url), infoJsonPath: `/tmp/${url}.json`}),
+      download: (opts: DownloadArgs & {ytdlp: string}) => {
+        inFlight++
+        const gate = deferred<string>()
+        gates.set(opts.url, gate)
+        return gate.promise.then(fp => {
+          inFlight--
+          return fp
+        })
+      },
+    },
+    {onAllDone: done => doneCalls.push(done)},
+  )
+  for (const url of urls) queue.start({url})
+  await flush()
+  for (const url of urls.slice(0, 3)) gates.get(url)!.resolve(`/tmp/Downloads/${url.split('//')[1]}.mp4`)
+  await flush()
+  assert.equal(doneCalls.length, 0, 'onAllDone must not fire while items still run')
+  gates.get(urls[3])!.resolve('/tmp/Downloads/d.example/v.mp4')
+  gates.get(urls[4])!.resolve('/tmp/Downloads/e.example/v.mp4')
+  await flush()
+  assert.equal(inFlight, 0)
+  assert.equal(queue.hasActive(), false)
+  assert.equal(doneCalls.length, 1, 'onAllDone must fire exactly once across multiple pump cycles')
+  assert.deepEqual(doneCalls[0]!.filepaths, [
+    '/tmp/Downloads/a.example/v.mp4',
+    '/tmp/Downloads/b.example/v.mp4',
+    '/tmp/Downloads/c.example/v.mp4',
+    '/tmp/Downloads/d.example/v.mp4',
+    '/tmp/Downloads/e.example/v.mp4',
+  ])
+  assert.equal(doneCalls[0]!.errors.length, 0)
+  assert.equal(doneCalls[0]!.cancelled, false)
+  assert.equal(doneCalls[0]!.aborted, false)
+
+  // one-shot: a new item after drain must not re-fire onAllDone
+  queue.start({url: 'https://f.example/v'})
+  await flush()
+  gates.get('https://f.example/v')!.resolve('/tmp/Downloads/f.example/v.mp4')
+  await flush()
+  assert.equal(queue.hasActive(), false)
+  assert.equal(doneCalls.length, 1, 'onAllDone must never fire twice for one queue')
+})
+
+test('parallelQueue defers onAllDone while a pick pends, firing after the pick settles with its result (REQ-par-017)', async () => {
+  let resolvePick!: (value: DownloadChoice | 'playlist' | 'cancel') => void
+  const pick = new Promise<DownloadChoice | 'playlist' | 'cancel'>(resolve => {
+    resolvePick = resolve
+  })
+  let pickedTitle = ''
+  const doneCalls: DoneInfo[] = []
+  const statuses: string[] = []
+  const queue = makeParallelQueue(
+    {
+      probe: async (_ytdlp, url) => ({info: info(url), infoJsonPath: `/tmp/${url}.json`}),
+      download: async (opts: DownloadArgs & {ytdlp: string}) =>
+        opts.url.includes('a.example') ? 'a.mp4' : 'b.mp4',
+    },
+    {
+      choiceFor: videoInfo => {
+        if (videoInfo.title === 'https://b.example/v') {
+          pickedTitle = videoInfo.title
+          return pick
+        }
+        return pqChoice
+      },
+      onItemState: (itemId, status) => statuses.push(`${itemId}:${status}`),
+      onAllDone: done => doneCalls.push(done),
+    },
+  )
+  queue.start({url: 'https://a.example/v'})
+  queue.start({url: 'https://b.example/v'})
+  await flush()
+  assert.equal(pickedTitle, 'https://b.example/v', 'b must be sitting on the open picker')
+  assert.equal(queue.pendingPicks(), 1, 'one picker must be open')
+  assert.equal(doneCalls.length, 0, 'done must defer while a pick pends')
+  assert.equal(queue.hasActive(), true, 'the picking item still holds its slot')
+  assert.ok(statuses.includes('item-1:picking'))
+
+  resolvePick(pqChoice)
+  await flush()
+  assert.equal(queue.pendingPicks(), 0, 'the pick counter must settle after resolution')
+  assert.equal(queue.hasActive(), false)
+  assert.equal(doneCalls.length, 1, 'done must fire once the pick settles')
+  assert.deepEqual(doneCalls[0]!.filepaths, ['a.mp4', 'b.mp4'], 'the picked item result must be included')
+  assert.equal(doneCalls[0]!.cancelled, false)
+})
+
+test('parallelQueue defers done while a pick pends and drains after the picker cancels that item (REQ-par-009/017)', async () => {
+  let resolvePick!: (value: DownloadChoice | 'playlist' | 'cancel') => void
+  const pick = new Promise<DownloadChoice | 'playlist' | 'cancel'>(resolve => {
+    resolvePick = resolve
+  })
+  const downloads: string[] = []
+  const doneCalls: DoneInfo[] = []
+  const queue = makeParallelQueue(
+    {
+      probe: async (_ytdlp, url) => ({info: info(url), infoJsonPath: `/tmp/${url}.json`}),
+      download: async (opts: DownloadArgs & {ytdlp: string}) => {
+        downloads.push(opts.url)
+        return opts.url.includes('a.example') ? 'a.mp4' : 'c.mp4'
+      },
+    },
+    {
+      choiceFor: videoInfo => (videoInfo.title === 'https://b.example/v' ? pick : pqChoice),
+      onAllDone: done => doneCalls.push(done),
+    },
+  )
+  queue.start({url: 'https://a.example/v'})
+  queue.start({url: 'https://b.example/v'})
+  queue.start({url: 'https://c.example/v'})
+  await flush()
+  assert.equal(queue.pendingPicks(), 1)
+  assert.equal(doneCalls.length, 0, 'done must defer while the picker is open')
+  resolvePick('cancel') // esc on the picker — only b cancels (REQ-par-009)
+  await flush()
+  assert.deepEqual(downloads, ['https://a.example/v', 'https://c.example/v'], 'only the picked item must cancel')
+  assert.equal(queue.pendingPicks(), 0)
+  assert.equal(queue.hasActive(), false)
+  assert.equal(doneCalls.length, 1, 'done must fire after the picker cancels the pending item')
+  assert.deepEqual(doneCalls[0]!.filepaths, ['a.mp4', 'c.mp4'])
+  assert.equal(doneCalls[0]!.cancelled, false, 'an item-level cancel must not mark the whole run cancelled')
+})
+
+test('parallelQueue playlist holds exactly 1 slot, entries sequential, queued videos start mid-iteration (REQ-par-012/013)', async () => {
+  const started: string[] = []
+  const playlistEntries: number[] = []
+  let playlistInFlight = 0
+  let maxPlaylistInFlight = 0
+  let totalInFlight = 0
+  let maxTotalInFlight = 0
+  const gates = new Map<string, Deferred<string>>()
+  const doneCalls: DoneInfo[] = []
+  const queue = makeParallelQueue(
+    {
+      probe: async (_ytdlp, url) =>
+        url.includes('pl.example')
+          ? {info: {title: 'pl', playlist_id: 'PL1', playlist_count: 5}, infoJsonPath: '/tmp/pl.json'}
+          : {info: info(url), infoJsonPath: `/tmp/${url}.json`},
+      download: (opts: DownloadArgs & {ytdlp: string}) => {
+        started.push(opts.url)
+        totalInFlight++
+        maxTotalInFlight = Math.max(maxTotalInFlight, totalInFlight)
+        const key = opts.playlist ? `pl:${opts.playlistIndex}` : opts.url
+        if (opts.playlist) {
+          playlistEntries.push(opts.playlistIndex!)
+          playlistInFlight++
+          maxPlaylistInFlight = Math.max(maxPlaylistInFlight, playlistInFlight)
+        }
+        const gate = deferred<string>()
+        gates.set(key, gate)
+        return gate.promise.then(fp => {
+          totalInFlight--
+          if (opts.playlist) playlistInFlight--
+          return fp
+        })
+      },
+    },
+    {
+      choiceFor: videoInfo => (videoInfo.title === 'pl' ? 'playlist' : pqChoice),
+      onAllDone: done => doneCalls.push(done),
+    },
+  )
+  queue.start({url: 'https://pl.example/pl'})
+  queue.start({url: 'https://v1.example/v'})
+  queue.start({url: 'https://v2.example/v'})
+  queue.start({url: 'https://v3.example/v'})
+  await flush()
+  assert.deepEqual(playlistEntries, [1], 'the playlist task must start its first entry')
+  assert.equal(maxTotalInFlight, 3, 'playlist task + 2 videos must use all 3 slots (REQ-par-012)')
+  assert.equal(maxPlaylistInFlight, 1, 'playlist entries must never be concurrent')
+
+  // v1 finishes → the queued v3 starts while the playlist entry 1 is still in flight (REQ-par-013)
+  gates.get('https://v1.example/v')!.resolve('/tmp/v1.mp4')
+  await flush()
+  assert.ok(started.includes('https://v3.example/v'), 'a queued video must start while the playlist iterates')
+  assert.deepEqual(playlistEntries, [1], 'the playlist task must still be on entry 1')
+
+  gates.get('https://v2.example/v')!.resolve('/tmp/v2.mp4')
+  gates.get('https://v3.example/v')!.resolve('/tmp/v3.mp4')
+  await flush()
+  for (let i = 1; i <= 5; i++) {
+    gates.get(`pl:${i}`)!.resolve(`/tmp/pl-${i}.mp4`)
+    await flush()
+  }
+  assert.deepEqual(playlistEntries, [1, 2, 3, 4, 5], 'entries must download strictly in order, one at a time')
+  assert.equal(maxPlaylistInFlight, 1)
+  assert.equal(maxTotalInFlight, 3)
+  assert.equal(queue.hasActive(), false)
+  assert.equal(doneCalls.length, 1)
+  assert.equal(doneCalls[0]!.filepaths.length, 8, '5 playlist entries + 3 videos must aggregate')
+})
+
+test('parallelQueue aggregates every item error, not only the first (REQ-par-016)', async () => {
+  const doneCalls: DoneInfo[] = []
+  const queue = makeParallelQueue(
+    {
+      probe: async () => ({info: info(), infoJsonPath: '/tmp/info.json'}),
+      download: async (opts: DownloadArgs & {ytdlp: string}) => {
+        if (opts.url.includes('b.example')) throw new Error('b roto')
+        if (opts.url.includes('c.example')) throw new Error('c roto')
+        return 'a.mp4'
+      },
+    },
+    {onAllDone: done => doneCalls.push(done)},
+  )
+  queue.start({url: 'https://a.example/v'})
+  queue.start({url: 'https://b.example/v'})
+  queue.start({url: 'https://c.example/v'})
+  await flush()
+  assert.equal(queue.hasActive(), false)
+  const outcome = queue.currentOutcome()
+  assert.deepEqual(outcome.filepaths, ['a.mp4'])
+  assert.equal(outcome.errors.length, 2, 'both failing items must contribute their error')
+  assert.ok(outcome.errors.some(error => error.includes('b roto')))
+  assert.ok(outcome.errors.some(error => error.includes('c roto')))
+  assert.equal(doneCalls.length, 1)
+  assert.equal(doneCalls[0]!.errors.length, 2, 'done must carry every error, not only errors[0]')
 })
