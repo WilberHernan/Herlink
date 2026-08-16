@@ -18,7 +18,7 @@ import {detectPlatform, isProbablyUrl, type Platform} from './lib/platforms.js'
 import {isTermux, resolveOutDir} from './lib/termux.js'
 import {useMouseClick} from './lib/use-mouse-click.js'
 import {nextThemeMode, ThemeProvider, type ThemeMode, useTheme} from './theme.js'
-import {runQueue, type Outcome} from './lib/queue.js'
+import {runQueue, type DoneInfo, type ItemStateStatus, type Outcome} from './lib/queue.js'
 export type {Outcome} from './lib/queue.js'
 import {
   buildChoices,
@@ -96,6 +96,114 @@ function indeterminateMeta(progress: DownloadProgress): string {
 /** -o wins over the ~/Downloads default (D12); the Termux effect is skipped when an override is set. */
 export function resolveInitialOutDir(outDirOverride: string | undefined, homeDir: string): string {
   return outDirOverride ?? path.join(homeDir, 'Downloads')
+}
+
+// ── T4a: pure helpers shared by the screens rewrite (D5/D9/D10) ─────────────
+
+/** Screen model replacing the phase enum (D4) — 'error' is gone: failures are
+ * per-item rows in done (REQ-par-016). */
+export type Screen = 'input' | 'picker' | 'downloads' | 'done'
+
+/** One row of the downloads screen, keyed by itemId in insertion order (D5). */
+export type ItemState = {
+  status: ItemStateStatus
+  url: string
+  title?: string
+  progress?: DownloadProgress
+  error?: string
+}
+
+/** What the done screen renders — heading, sub line and every failed item's
+ * error (REQ-par-015/016, D10). */
+export type DoneSummary = {heading: string; sub: string; errors: string[]}
+
+/**
+ * Aggregates the finished run into done-screen copy. The four goldens are
+ * verbatim from the sequential build (REQ-par-015): 1 file → singular, N →
+ * plural; cancelled → ✗ Cancelado with kept-files or none. Every failed item's
+ * error is surfaced, never only errors[0] (REQ-par-016).
+ */
+export function doneSummary(done: DoneInfo): DoneSummary {
+  const {filepaths, errors, cancelled} = done
+  if (cancelled) {
+    return {
+      heading: '✗ Cancelado',
+      sub: filepaths.length > 0 ? 'Se guardaron los archivos ya descargados:' : 'No se descargó ningún archivo',
+      errors: [...errors],
+    }
+  }
+  return {
+    heading: filepaths.length > 1 ? `✓ Descargados ${filepaths.length} archivos` : '✓ Descargado',
+    sub: filepaths.length > 1 ? 'Están en:' : 'Tu archivo está en:',
+    errors: [...errors],
+  }
+}
+
+// valid status edges fired by the parallel driver (D5, REQ-par-006 s2): the
+// picker cancel and abort paths settle with no errors, so probing and picking
+// may go straight to done; 'queued' → 'queued' is the idempotent row-creation
+// event emitted by start() right after the map entry is created
+const VALID_TRANSITIONS: Record<ItemStateStatus, readonly ItemStateStatus[]> = {
+  queued: ['queued', 'probing'],
+  probing: ['picking', 'done', 'error'],
+  picking: ['downloading', 'done', 'error'],
+  downloading: ['processing', 'refreshing', 'done', 'error'],
+  processing: ['refreshing', 'downloading', 'done', 'error'],
+  refreshing: ['downloading', 'done', 'error'],
+  done: [],
+  error: [],
+}
+
+// statuses that may receive a progress tick
+const PROGRESS_STATUSES: readonly ItemStateStatus[] = ['downloading', 'processing', 'refreshing']
+
+/**
+ * Pure reducer for one downloads-screen row (D5). Applies the driver's status
+ * events (onItemState) and progress ticks (onProgress) to the item's ItemState,
+ * throwing on an impossible transition — a wiring bug in T4b surfaces as a loud
+ * error instead of a silently corrupted row.
+ */
+export function itemStateTransition(
+  prev: ItemState,
+  event: ItemStateStatus | {type: 'progress'; progress: DownloadProgress},
+): ItemState {
+  if (typeof event === 'object') {
+    if (!PROGRESS_STATUSES.includes(prev.status)) {
+      throw new Error(`invalid itemStateTransition: progress event in status ${prev.status}`)
+    }
+    return {...prev, progress: event.progress}
+  }
+  if (!VALID_TRANSITIONS[prev.status].includes(event)) {
+    throw new Error(`invalid itemStateTransition: ${prev.status} → ${event}`)
+  }
+  return {...prev, status: event}
+}
+
+/**
+ * Init-once memoization (D9, REQ-par-021): get() caches the run() promise, so
+ * a second submit mid-init awaits the SAME pending promise (one yt-dlp
+ * download / self-update per startup). A rejected init clears the cache (next
+ * get() retries fresh); reset() forces a fresh run on demand.
+ */
+export function createCachedInit<T>(run: () => Promise<T>): {get: () => Promise<T>; reset: () => void} {
+  let cached: Promise<T> | undefined
+  return {
+    get: () => {
+      if (!cached) {
+        const promise = run()
+        cached = promise
+        // identity guard: an older rejection must not clear a newer promise
+        // started after an explicit reset()
+        promise.catch(() => {
+          if (cached === promise) cached = undefined
+        })
+      }
+      return cached
+    },
+    reset: () => {
+      cached = undefined
+    },
+  }
 }
 
 type Phase =
