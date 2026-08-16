@@ -147,3 +147,6 @@ if (isTTY) leaveAltScreen()
 for (const filepath of outcome.filepaths ?? []) {
   console.log(`✓ descargado → ${filepath}`)
 }
+// T5: a run with failures or a cancel exits non-zero so scripts can react,
+// mirroring the scriptable path (REQ-par-019/020)
+process.exit(outcome.errors?.length || outcome.cancelled ? 1 : 0)
