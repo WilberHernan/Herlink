@@ -136,14 +136,17 @@ export function doneSummary(done: DoneInfo): DoneSummary {
 // valid status edges fired by the parallel driver (D5, REQ-par-006 s2): the
 // picker cancel and abort paths settle with no errors, so probing and picking
 // may go straight to done; 'queued' → 'queued' is the idempotent row-creation
-// event emitted by start() right after the map entry is created
+// event emitted by start() right after the map entry is created. processing →
+// processing covers a multi-entry playlist with per-entry ffmpeg merges;
+// refreshing → processing is the fresh-extraction retry landing straight in
+// the merge step (queue.ts runItem retry path).
 const VALID_TRANSITIONS: Record<ItemStateStatus, readonly ItemStateStatus[]> = {
   queued: ['queued', 'probing'],
   probing: ['picking', 'done', 'error'],
   picking: ['downloading', 'done', 'error'],
   downloading: ['processing', 'refreshing', 'done', 'error'],
-  processing: ['refreshing', 'downloading', 'done', 'error'],
-  refreshing: ['downloading', 'done', 'error'],
+  processing: ['processing', 'refreshing', 'downloading', 'done', 'error'],
+  refreshing: ['downloading', 'processing', 'done', 'error'],
   done: [],
   error: [],
 }
@@ -313,6 +316,17 @@ function AppContent({
   const pickInfosRef = useRef(new Map<string, VideoInfo>())
   // itemId whose choiceFor is about to fire — set by the 'picking' event
   const pickForRef = useRef<string | undefined>(undefined)
+  // urls whose queue.start() has not yet emitted the row-creating event; the
+  // driver emits synchronously inside start(), before the app knows itemId, so
+  // the FIFO pairs each emitted row with its url in order
+  const pendingUrlsRef = useRef<string[]>([])
+  // one startItems may be mid-init; a second submit joins it instead of
+  // creating a second queue (Termux resolveOutDir can refire this effect)
+  const startingRef = useRef(false)
+  const pendingJoinRef = useRef<string[]>([])
+  // initialUrls are submitted exactly once; on Termux the async outDir
+  // resolution recreates startItems and would otherwise re-enqueue them
+  const initialSubmittedRef = useRef(false)
   const highlightRef = useRef(0) // choice under the cursor, for the ↵ hint click
   const submittedRef = useRef<string[]>([])
 
@@ -348,79 +362,99 @@ function AppContent({
       const existing = queueRef.current
       if (existing) {
         // REQ-par-001: back at the input mid-run, more links join the SAME pool
-        for (const url of urls) {
-          submittedRef.current.push(url)
-          const itemId = existing.start({url})
-          setItems(prev => new Map(prev).set(itemId, {status: 'queued', url}))
-        }
+        submittedRef.current.push(...urls)
+        enqueue(existing, urls)
         return
       }
+      if (startingRef.current) {
+        // second submit while init is pending — join after the first queue exists
+        pendingJoinRef.current.push(...urls)
+        return
+      }
+      startingRef.current = true
       setScreen('downloads')
-      let init: InitContext
       try {
-        init = await getInit().get()
+        const init = await getInit().get()
+        const merged = pendingJoinRef.current.length > 0 ? [...urls, ...pendingJoinRef.current] : urls
+        pendingJoinRef.current = []
+        submittedRef.current.push(...merged)
+        const queue = createParallelQueue({
+          ytdlp: init.ytdlp,
+          outDir,
+          ffmpeg: init.ffmpeg,
+          resume,
+          cookies,
+          embedMetadata,
+          subs,
+          noUpdate: init.noUpdate,
+          onItemState: (itemId, status) => {
+            // the 'picking' event precedes the choiceFor callback; stash the
+            // itemId so choiceFor knows which row its picker belongs to
+            if (status === 'picking') pickForRef.current = itemId
+            setItems(prev => {
+              const row = prev.get(itemId)
+              if (!row) {
+                // start() emits the row-creating events synchronously, before
+                // the app knows itemId — pair each with its url (FIFO)
+                const url = pendingUrlsRef.current.shift()
+                if (url === undefined) return prev
+                return new Map(prev).set(itemId, {status, url})
+              }
+              return new Map(prev).set(itemId, itemStateTransition(row, status))
+            })
+          },
+          onProgress: (itemId, progress) =>
+            setItems(prev => {
+              const row = prev.get(itemId)
+              if (!row) return prev
+              return new Map(prev).set(itemId, itemStateTransition(row, {type: 'progress', progress}))
+            }),
+          choiceFor: async info => {
+            const itemId = pickForRef.current
+            pickForRef.current = undefined
+            if (!itemId) return 'cancel'
+            pickInfosRef.current.set(itemId, info)
+            setScreen('picker')
+            return new Promise(resolve => {
+              pickersRef.current.set(itemId, resolve)
+              setPickerItemId(prev => prev ?? itemId)
+            })
+          },
+          onAllDone: done => {
+            queueRef.current = undefined
+            // history gains the completed run's links (every submit, including
+            // mid-run joins), never a cancelled one
+            if (!done.cancelled) for (const itemUrl of submittedRef.current) setHistory(addToHistory(itemUrl))
+            onOutcome(done)
+            setDoneInfo(done)
+            setScreen('done')
+          },
+        })
+        queueRef.current = queue
+        enqueue(queue, merged)
       } catch (error) {
+        pendingJoinRef.current = []
         setWarning(error instanceof Error ? error.message : String(error))
         setScreen('input')
-        return
-      }
-      const runUrls = urls.slice()
-      const queue = createParallelQueue({
-        ytdlp: init.ytdlp,
-        outDir,
-        ffmpeg: init.ffmpeg,
-        resume,
-        cookies,
-        embedMetadata,
-        subs,
-        noUpdate: init.noUpdate,
-        onItemState: (itemId, status) => {
-          // the 'picking' event precedes the choiceFor callback; stash the
-          // itemId so choiceFor knows which row its picker belongs to
-          if (status === 'picking') pickForRef.current = itemId
-          setItems(prev => {
-            const row = prev.get(itemId)
-            if (!row) return prev
-            return new Map(prev).set(itemId, itemStateTransition(row, status))
-          })
-        },
-        onProgress: (itemId, progress) =>
-          setItems(prev => {
-            const row = prev.get(itemId)
-            if (!row) return prev
-            return new Map(prev).set(itemId, itemStateTransition(row, {type: 'progress', progress}))
-          }),
-        choiceFor: async info => {
-          const itemId = pickForRef.current
-          pickForRef.current = undefined
-          if (!itemId) return 'cancel'
-          pickInfosRef.current.set(itemId, info)
-          return new Promise(resolve => {
-            pickersRef.current.set(itemId, resolve)
-            setPickerItemId(prev => prev ?? itemId)
-          })
-        },
-        onAllDone: done => {
-          queueRef.current = undefined
-          // history gains the completed run's links, never a cancelled one
-          if (!done.cancelled) for (const itemUrl of runUrls) setHistory(addToHistory(itemUrl))
-          onOutcome(done)
-          setDoneInfo(done)
-          setScreen('done')
-        },
-      })
-      queueRef.current = queue
-      for (const url of urls) {
-        submittedRef.current.push(url)
-        const itemId = queue.start({url})
-        setItems(prev => new Map(prev).set(itemId, {status: 'queued', url}))
+      } finally {
+        startingRef.current = false
       }
     },
     [outDir, resume, cookies, embedMetadata, subs, getInit, onOutcome],
   )
 
+  // one url per queue.start(); the driver's synchronous events create the rows
+  const enqueue = (queue: ReturnType<typeof createParallelQueue>, urls: string[]) => {
+    for (const url of urls) {
+      pendingUrlsRef.current.push(url)
+      queue.start({url})
+    }
+  }
+
   useEffect(() => {
-    if (initialUrls?.length) void startItems(initialUrls)
+    if (!initialUrls?.length || initialSubmittedRef.current) return
+    initialSubmittedRef.current = true
+    void startItems(initialUrls)
   }, [initialUrls, startItems])
 
   useEffect(() => {
@@ -468,12 +502,16 @@ function AppContent({
     setPickerItemId(pickersRef.current.keys().next().value as string | undefined)
   }, [pickerItemId])
 
-  // whole-run cancel (REQ-par-010): abort every item AND resolve the open
-  // picker, or onAllDone would wait on it forever (pendingPicks guard)
+  // whole-run cancel (REQ-par-010): abort every item AND resolve EVERY open
+  // picker, or onAllDone would wait on the sibling promises forever
+  // (pendingPicks guard in queue.ts)
   const cancelRun = useCallback(() => {
     queueRef.current?.cancelAll()
-    cancelPendingPick()
-  }, [cancelPendingPick])
+    for (const resolve of pickersRef.current.values()) resolve('cancel')
+    pickersRef.current.clear()
+    pickInfosRef.current.clear()
+    setPickerItemId(undefined)
+  }, [])
 
   useInput(
     (input, key) => {

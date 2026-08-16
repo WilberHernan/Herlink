@@ -174,6 +174,14 @@ test('itemStateTransition: progress while queued throws', () => {
   )
 })
 
+test('itemStateTransition: retry lands refreshing → processing straight into the merge (runItem retry path)', () => {
+  assert.equal(itemStateTransition(itemState('refreshing'), 'processing').status, 'processing')
+})
+
+test('itemStateTransition: multi-entry playlist keeps processing → processing between ffmpeg merges', () => {
+  assert.equal(itemStateTransition(itemState('processing'), 'processing').status, 'processing')
+})
+
 // ── T4a: createCachedInit (REQ-par-021, D9) ─────────────────────────────────
 
 test('createCachedInit: two get() calls share one promise — run executes once (REQ-par-021)', async () => {
