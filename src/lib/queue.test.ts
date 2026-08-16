@@ -222,6 +222,67 @@ test('runQueue retries with a fresh extraction when the cached-info download fai
   assert.equal(outcome.errors.length, 0)
 })
 
+test('runQueue falls back to audio-only once when the video stream is DRM-blocked (403)', async () => {
+  const attempts: string[] = []
+  let retries = 0
+  let audioFallbacks = 0
+  const outcome = await runQueue(
+    [{url: 'https://example.com/v'}],
+    {
+      ytdlp: 'yt-dlp',
+      outDir: '/tmp/Downloads',
+      ffmpeg: {available: false},
+      choiceFor: () => choice,
+      onRetry: () => retries++,
+      onAudioFallback: () => audioFallbacks++,
+    },
+    {
+      probe: async () => ({info: info(), infoJsonPath: '/tmp/info.json'}),
+      download: async (opts: DownloadArgs & {ytdlp: string}) => {
+        attempts.push(opts.choice.kind)
+        if (opts.choice.kind === 'audio') {
+          assert.deepEqual(
+            opts.choice.args,
+            ['-f', 'ba/b'],
+            'no-ffmpeg fallback must use the best native audio format, no extraction',
+          )
+          return '/tmp/Downloads/audio.m4a'
+        }
+        throw new Error('unable to download video data: HTTP Error 403: Forbidden')
+      },
+    },
+  )
+  assert.deepEqual(attempts, ['video', 'video', 'audio'], 'cached video + fresh-retry video + audio fallback')
+  assert.equal(retries, 1, 'the fresh-extraction retry must fire before the fallback')
+  assert.equal(audioFallbacks, 1, 'onAudioFallback must fire exactly once')
+  assert.deepEqual(outcome.filepaths, ['/tmp/Downloads/audio.m4a'])
+  assert.equal(outcome.errors.length, 0)
+})
+
+test('runQueue does NOT fall back to audio for a non-DRM failure — the error is reported', async () => {
+  let audioFallbacks = 0
+  const outcome = await runQueue(
+    [{url: 'https://example.com/v'}],
+    {
+      ytdlp: 'yt-dlp',
+      outDir: '/tmp/Downloads',
+      ffmpeg: {available: false},
+      choiceFor: () => choice,
+      onAudioFallback: () => audioFallbacks++,
+    },
+    {
+      probe: async () => ({info: info(), infoJsonPath: '/tmp/info.json'}),
+      download: async () => {
+        throw new Error('Some network error')
+      },
+    },
+  )
+  assert.equal(audioFallbacks, 0, 'a non-DRM failure must never trigger the fallback')
+  assert.deepEqual(outcome.filepaths, [])
+  assert.equal(outcome.errors.length, 1)
+  assert.match(outcome.errors[0]!, /Some network error/)
+})
+
 test('runQueue threads item.playlistIndex into the download (D8)', async () => {
   let seenIndex: number | undefined
   let seenInfoJsonPath: string | undefined

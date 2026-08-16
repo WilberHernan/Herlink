@@ -359,6 +359,15 @@ export function audioChoice(info: VideoInfo): DownloadChoice {
   return buildChoices(info).at(-1)!
 }
 
+/**
+ * Audio-only fallback when the video stream is DRM-blocked (mp3 when ffmpeg
+ * is available, best native audio format otherwise).
+ */
+export function audioFallbackChoice(info: VideoInfo, ffmpeg: FfmpegStatus): DownloadChoice {
+  if (ffmpeg.available) return audioChoice(info)
+  return {kind: 'audio', label: 'solo audio', args: ['-f', 'ba/b']}
+}
+
 export type DownloadProgress = {
   downloadedBytes: number
   totalBytes?: number

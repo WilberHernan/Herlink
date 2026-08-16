@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import {
   audioChoice,
+  audioFallbackChoice,
   bestChoice,
   download,
   findFfmpeg,
@@ -18,6 +19,10 @@ import {
 export type QueueItem = {url: string; playlistIndex?: number}
 export type QueueOutcome = {filepaths: string[]; errors: string[]; cancelled: boolean}
 export type Outcome = {filepaths?: string[]; errors?: string[]; cancelled?: boolean}
+
+// DRM-style failures (permanent 403 on the video stream) fall back to
+// audio-only once — a fresh extraction cannot fix them (D-DRM)
+const AUDIO_FALLBACK_RE = /403|DRM|unable to download video data|protected/i
 
 /** Expand a playlist url into per-entry queue items, 1-based (D8). */
 export function playlistItems(url: string, count: number): QueueItem[] {
@@ -55,6 +60,7 @@ export type QueueRunOptions = {
   signal?: AbortSignal
   onItem?: (index: number) => void // per-item hook for UI state (url, "video i/N")
   onRetry?: () => void // fired before the fresh-extraction retry
+  onAudioFallback?: () => void // fired before the audio-only fallback download (video stream DRM-blocked)
   onProgress?: (progress: DownloadProgress) => void
   onProcessing?: () => void
   onStatus?: (message: string) => void
@@ -67,6 +73,7 @@ export type ItemResult = {filepaths: string[]; errors: string[]; cancelled: bool
  * itemId. */
 export type ItemHooks = {
   onRetry?: () => void // fired before the fresh-extraction retry
+  onAudioFallback?: () => void // fired before the audio-only fallback download (video stream DRM-blocked)
   onProgress?: (progress: DownloadProgress) => void
   onProcessing?: () => void
 }
@@ -229,7 +236,34 @@ export async function runItem(
         cancelled = true
         return {filepaths, errors, cancelled}
       }
-      errors.push(error2 instanceof Error ? error2.message : String(error2))
+      const message = error2 instanceof Error ? error2.message : String(error2)
+      if (choice.kind === 'video' && AUDIO_FALLBACK_RE.test(message)) {
+        // the video stream is DRM-blocked — a permanent 403 no fresh extraction
+        // can fix, so retry once as audio-only instead of failing
+        hooks.onAudioFallback?.()
+        try {
+          filepaths.push(
+            await doDownload(
+              {
+                ...base,
+                url: item.url,
+                choice: audioFallbackChoice(info, opts.ffmpeg),
+                ...(item.playlistIndex ? {playlistIndex: item.playlistIndex} : {}),
+              },
+              handlers,
+              signal,
+            ),
+          )
+        } catch (error3) {
+          if (signal?.aborted) {
+            cancelled = true
+            return {filepaths, errors, cancelled}
+          }
+          errors.push(error3 instanceof Error ? error3.message : String(error3))
+        }
+      } else {
+        errors.push(message)
+      }
     }
   }
   return {filepaths, errors, cancelled}
@@ -253,6 +287,7 @@ export async function runQueue(
 
   const hooks: ItemHooks = {
     onRetry: opts.onRetry,
+    onAudioFallback: opts.onAudioFallback,
     onProgress: opts.onProgress,
     onProcessing: opts.onProcessing,
   }
@@ -284,6 +319,7 @@ export type ItemStateStatus =
   | 'downloading'
   | 'processing'
   | 'refreshing'
+  | 'audio-fallback'
   | 'done'
   | 'error'
 
@@ -363,6 +399,7 @@ export function createParallelQueue(opts: ParallelQueueOptions): ParallelQueue {
   function itemHooks(itemId: string): ItemHooks {
     return {
       onRetry: () => opts.onItemState(itemId, 'refreshing'),
+      onAudioFallback: () => opts.onItemState(itemId, 'audio-fallback'),
       onProgress: progress => opts.onProgress(itemId, progress),
       onProcessing: () => opts.onItemState(itemId, 'processing'),
     }

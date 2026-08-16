@@ -218,6 +218,19 @@ test('itemStateTransition: retry lands refreshing → processing straight into t
   assert.equal(itemStateTransition(itemState('refreshing'), 'processing').status, 'processing')
 })
 
+test('itemStateTransition: refreshing → audio-fallback is valid (DRM-blocked retry falls back to audio)', () => {
+  assert.equal(itemStateTransition(itemState('refreshing'), 'audio-fallback').status, 'audio-fallback')
+})
+
+test('itemStateTransition: audio-fallback → processing and audio-fallback → done are valid', () => {
+  assert.equal(itemStateTransition(itemState('audio-fallback'), 'processing').status, 'processing')
+  assert.equal(itemStateTransition(itemState('audio-fallback'), 'done').status, 'done')
+})
+
+test('itemStateTransition: invalid transition throws (downloading → audio-fallback)', () => {
+  assert.throws(() => itemStateTransition(itemState('downloading'), 'audio-fallback'), /invalid itemStateTransition/)
+})
+
 test('itemStateTransition: multi-entry playlist keeps processing → processing between ffmpeg merges', () => {
   assert.equal(itemStateTransition(itemState('processing'), 'processing').status, 'processing')
 })

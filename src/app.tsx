@@ -139,20 +139,22 @@ export function doneSummary(done: DoneInfo): DoneSummary {
 // event emitted by start() right after the map entry is created. processing →
 // processing covers a multi-entry playlist with per-entry ffmpeg merges;
 // refreshing → processing is the fresh-extraction retry landing straight in
-// the merge step (queue.ts runItem retry path).
+// the merge step (queue.ts runItem retry path); refreshing → audio-fallback is
+// the DRM-blocked video stream retrying once as audio-only.
 const VALID_TRANSITIONS: Record<ItemStateStatus, readonly ItemStateStatus[]> = {
   queued: ['queued', 'probing'],
   probing: ['picking', 'done', 'error'],
   picking: ['downloading', 'done', 'error'],
   downloading: ['processing', 'refreshing', 'done', 'error'],
   processing: ['processing', 'refreshing', 'downloading', 'done', 'error'],
-  refreshing: ['downloading', 'processing', 'done', 'error'],
+  refreshing: ['downloading', 'processing', 'audio-fallback', 'done', 'error'],
+  'audio-fallback': ['processing', 'done', 'error'],
   done: [],
   error: [],
 }
 
 // statuses that may receive a progress tick
-const PROGRESS_STATUSES: readonly ItemStateStatus[] = ['downloading', 'processing', 'refreshing']
+const PROGRESS_STATUSES: readonly ItemStateStatus[] = ['downloading', 'processing', 'refreshing', 'audio-fallback']
 
 /**
  * Pure reducer for one downloads-screen row (D5). Applies the driver's status
@@ -239,7 +241,8 @@ const STATUS_LABEL: Record<ItemStateStatus, string> = {
   picking: 'eligiendo formato…',
   downloading: 'descargando…',
   processing: 'procesando…',
-  refreshing: 'enlace expirado…',
+  refreshing: 'reintentando…',
+  'audio-fallback': 'bajando solo audio…',
   done: '✓',
   error: '✗',
 }
@@ -700,6 +703,8 @@ function AppContent({
         return theme.accent
       case 'refreshing':
         return theme.warning
+      case 'audio-fallback':
+        return theme.warning
       case 'downloading':
         return theme.text
       default:
@@ -739,7 +744,17 @@ function AppContent({
           <Text color={theme.accent}>
             <Spinner type="dots" />
           </Text>
-          <Text color={theme.muted}> Enlace expirado — obteniendo uno nuevo…</Text>
+          <Text color={theme.muted}> Reintentando — obteniendo datos nuevos…</Text>
+        </Text>
+      )
+    }
+    if (item.status === 'audio-fallback') {
+      return (
+        <Text>
+          <Text color={theme.accent}>
+            <Spinner type="dots" />
+          </Text>
+          <Text color={theme.muted}> video bloqueado — bajando solo audio…</Text>
         </Text>
       )
     }
