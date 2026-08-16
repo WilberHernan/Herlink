@@ -212,6 +212,26 @@ export function screenAfterPickerClose(remainingPickers: number, current: Screen
   return remainingPickers === 0 && current === 'picker' ? 'downloads' : current
 }
 
+/**
+ * Splits one submit value into the plausible URLs it carries — a single paste
+ * may bring several links separated by whitespace (REQ-par-001).
+ */
+export function splitSubmittedUrls(value: string): string[] {
+  return value
+    .trim()
+    .split(/\s+/)
+    .filter(url => isProbablyUrl(url))
+}
+
+/**
+ * After a rejected submit (the queue never accepted the links), the input is
+ * restored to the submitted value — unless the user already typed something
+ * new while the attempt was in flight, which must never be clobbered.
+ */
+export function restoreAfterRejectedSubmit(current: string, rejectedValue: string): string {
+  return current.trim() === '' ? rejectedValue : current
+}
+
 /** Short label per item status on the downloads screen (D4, REQ-par-006). */
 const STATUS_LABEL: Record<ItemStateStatus, string> = {
   queued: 'en cola',
@@ -364,21 +384,22 @@ function AppContent({
     return initRef.current
   }, [noUpdate])
 
-  // appends links to the live queue, or creates the queue on the first submit
+  // appends links to the live queue, or creates the queue on the first submit;
+  // resolves true when the queue accepted the urls (false on init failure)
   const startItems = useCallback(
-    async (urls: string[]) => {
+    async (urls: string[]): Promise<boolean> => {
       setWarning(undefined)
       const existing = queueRef.current
       if (existing) {
         // REQ-par-001: back at the input mid-run, more links join the SAME pool
         submittedRef.current.push(...urls)
         enqueue(existing, urls)
-        return
+        return true
       }
       if (startingRef.current) {
         // second submit while init is pending — join after the first queue exists
         pendingJoinRef.current.push(...urls)
-        return
+        return true
       }
       startingRef.current = true
       setScreen('downloads')
@@ -441,10 +462,12 @@ function AppContent({
         })
         queueRef.current = queue
         enqueue(queue, merged)
+        return true
       } catch (error) {
         pendingJoinRef.current = []
         setWarning(error instanceof Error ? error.message : String(error))
         setScreen('input')
+        return false
       } finally {
         startingRef.current = false
       }
@@ -547,16 +570,18 @@ function AppContent({
   )
 
   // one paste may carry several links (REQ-par-001); whitespace separates them
-  const handleUrlSubmit = (value: string) => {
-    const urls = value
-      .trim()
-      .split(/\s+/)
-      .filter(url => isProbablyUrl(url))
+  const handleUrlSubmit = async (value: string) => {
+    const urls = splitSubmittedUrls(value)
     if (urls.length === 0) {
       setWarning('Eso no parece un enlace — pega una url completa')
       return
     }
-    void startItems(urls)
+    // clear immediately: a stale value can never ride along on the next paste
+    // after a mid-run return (REQ-par-001). If the queue never accepts the
+    // links (init failure) the field is restored for retry.
+    setUrlInput('')
+    const accepted = await startItems(urls)
+    if (!accepted) setUrlInput(current => restoreAfterRejectedSubmit(current, value))
   }
 
   const clipboardOffered = Boolean(clipboardUrl) && urlInput === ''
@@ -684,10 +709,19 @@ function AppContent({
 
   const rowDetail = (item: ItemState) => {
     if (item.status === 'downloading' && item.progress) {
-      if (item.progress.totalBytes) {
-        return <ProgressBar percent={item.progress.downloadedBytes / item.progress.totalBytes} />
-      }
-      return <Text color={theme.muted}>{indeterminateMeta(item.progress)}</Text>
+      // the download bar sits right under the url/status pair, right-aligned
+      // and compact — the url owns the left edge (REQ-par-006 layout)
+      const detail =
+        item.progress.totalBytes ? (
+          <ProgressBar percent={item.progress.downloadedBytes / item.progress.totalBytes} width={14} />
+        ) : (
+          <Text color={theme.muted}>{indeterminateMeta(item.progress)}</Text>
+        )
+      return (
+        <Box flexDirection="row" justifyContent="flex-end">
+          {detail}
+        </Box>
+      )
     }
     if (item.status === 'processing') {
       return (
@@ -835,8 +869,10 @@ function AppContent({
             <Text color={theme.muted}>{doneSummaryInfo.sub}</Text>
           </Text>
           <Gap />
-          {doneInfo.filepaths.map(filepath => (
-            <Text key={filepath} color={theme.info}>
+          {doneInfo.filepaths.map((filepath, index) => (
+            // two files may resolve to the same path (same title from different
+            // urls) — a unique key keeps the map stable
+            <Text key={`${filepath}-${index}`} color={theme.info}>
               {shortenPath(filepath, os.homedir(), 60)}
             </Text>
           ))}

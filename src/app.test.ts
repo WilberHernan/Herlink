@@ -6,7 +6,9 @@ import {
   doneSummary,
   itemStateTransition,
   resolveInitialOutDir,
+  restoreAfterRejectedSubmit,
   screenAfterPickerClose,
+  splitSubmittedUrls,
   type ItemState,
 } from './app.js'
 import type {DoneInfo, ItemStateStatus} from './lib/queue.js'
@@ -49,6 +51,43 @@ test('App with initialUrls opens the downloads screen showing init progress (REQ
     if (previousNoColor === undefined) delete process.env.NO_COLOR
     else process.env.NO_COLOR = previousNoColor
   }
+})
+
+// ── T4a: submit input splitting (REQ-par-001) ───────────────────────────────
+
+test('splitSubmittedUrls: a single url passes through', () => {
+  assert.deepEqual(splitSubmittedUrls('https://example.com/v1'), ['https://example.com/v1'])
+})
+
+test('splitSubmittedUrls: whitespace-separated urls all submit (one paste, many links)', () => {
+  assert.deepEqual(
+    splitSubmittedUrls('https://example.com/v1  https://example.com/v2\thttps://example.com/v3'),
+    ['https://example.com/v1', 'https://example.com/v2', 'https://example.com/v3'],
+  )
+})
+
+test('splitSubmittedUrls: non-url tokens are filtered out', () => {
+  assert.deepEqual(splitSubmittedUrls('hola https://example.com/v1 chau'), ['https://example.com/v1'])
+})
+
+test('splitSubmittedUrls: empty and whitespace-only values yield no urls', () => {
+  assert.deepEqual(splitSubmittedUrls(''), [])
+  assert.deepEqual(splitSubmittedUrls('   \n\t  '), [])
+})
+
+test('restoreAfterRejectedSubmit: an empty field is restored with the rejected value', () => {
+  assert.equal(restoreAfterRejectedSubmit('', 'https://example.com/v1'), 'https://example.com/v1')
+})
+
+test('restoreAfterRejectedSubmit: fresh typing in the field is never clobbered', () => {
+  assert.equal(
+    restoreAfterRejectedSubmit('https://example.com/v2', 'https://example.com/v1'),
+    'https://example.com/v2',
+  )
+})
+
+test('restoreAfterRejectedSubmit: a whitespace-only field is restored too', () => {
+  assert.equal(restoreAfterRejectedSubmit('  ', 'https://example.com/v1'), 'https://example.com/v1')
 })
 
 // ── T4a: doneSummary (REQ-par-015/016) ──────────────────────────────────────
