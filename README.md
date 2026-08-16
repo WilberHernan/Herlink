@@ -1,10 +1,5 @@
 # Herlink
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
-  <img src="assets/logo-light.svg" alt="herlink" width="288">
-</picture>
-
 grab any video. paste. grab. done.
 
 Download videos from YouTube, X/Twitter, Instagram, TikTok and
