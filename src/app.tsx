@@ -203,6 +203,15 @@ export function createCachedInit<T>(run: () => Promise<T>): {get: () => Promise<
   }
 }
 
+/**
+ * Where the app goes when one picker closes (REQ-par-005): the last open
+ * picker returning to the run leaves the picker frame — an empty picker
+ * screen would render just the logo and hints with no progress rows.
+ */
+export function screenAfterPickerClose(remainingPickers: number, current: Screen): Screen {
+  return remainingPickers === 0 && current === 'picker' ? 'downloads' : current
+}
+
 /** Short label per item status on the downloads screen (D4, REQ-par-006). */
 const STATUS_LABEL: Record<ItemStateStatus, string> = {
   queued: 'en cola',
@@ -500,7 +509,9 @@ function AppContent({
     pickersRef.current.delete(pickerItemId)
     pickInfosRef.current.delete(pickerItemId)
     setPickerItemId(pickersRef.current.keys().next().value as string | undefined)
-  }, [pickerItemId])
+    // the last picker cancelled → back to the run, not an empty picker frame
+    setScreen(screenAfterPickerClose(pickersRef.current.size, screen))
+  }, [pickerItemId, screen])
 
   // whole-run cancel (REQ-par-010): abort every item AND resolve EVERY open
   // picker, or onAllDone would wait on the sibling promises forever
@@ -576,6 +587,8 @@ function AppContent({
     pickInfosRef.current.delete(itemId)
     resolve(choice)
     setPickerItemId(pickersRef.current.keys().next().value as string | undefined)
+    // no sibling pickers left → show the run so progress rows become visible
+    setScreen(screenAfterPickerClose(pickersRef.current.size, screen))
   }
 
   let hints: Array<[string, string]> = [...HINTS[screen], ['^t', `tema:${theme.mode}`]]

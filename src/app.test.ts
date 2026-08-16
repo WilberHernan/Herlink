@@ -6,6 +6,7 @@ import {
   doneSummary,
   itemStateTransition,
   resolveInitialOutDir,
+  screenAfterPickerClose,
   type ItemState,
 } from './app.js'
 import type {DoneInfo, ItemStateStatus} from './lib/queue.js'
@@ -180,6 +181,19 @@ test('itemStateTransition: retry lands refreshing → processing straight into t
 
 test('itemStateTransition: multi-entry playlist keeps processing → processing between ffmpeg merges', () => {
   assert.equal(itemStateTransition(itemState('processing'), 'processing').status, 'processing')
+})
+
+test('screenAfterPickerClose: resolving the last open picker returns to the run (REQ-par-005)', () => {
+  assert.equal(screenAfterPickerClose(0, 'picker'), 'downloads')
+})
+
+test('screenAfterPickerClose: a sibling picker stays open — screen keeps the picker', () => {
+  assert.equal(screenAfterPickerClose(2, 'picker'), 'picker')
+})
+
+test('screenAfterPickerClose: only the picker screen is affected', () => {
+  assert.equal(screenAfterPickerClose(0, 'input'), 'input')
+  assert.equal(screenAfterPickerClose(0, 'done'), 'done')
 })
 
 // ── T4a: createCachedInit (REQ-par-021, D9) ─────────────────────────────────
