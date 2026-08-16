@@ -275,6 +275,164 @@ export async function runQueue(
   return {filepaths, errors, cancelled}
 }
 
+// ── parallelQueue driver (D1/D3/D11) ────────────────────────────────────────
+
+export type ItemStateStatus =
+  | 'probing'
+  | 'queued'
+  | 'picking'
+  | 'downloading'
+  | 'processing'
+  | 'refreshing'
+  | 'done'
+  | 'error'
+
+export type DoneInfo = {filepaths: string[]; errors: string[]; cancelled: boolean; aborted?: boolean}
+
+export type ParallelQueueOptions = {
+  ytdlp: string
+  outDir: string
+  ffmpeg: FfmpegStatus
+  resume?: boolean
+  cookies?: string
+  embedMetadata?: boolean
+  subs?: string
+  noUpdate?: boolean
+  /** Max concurrent tasks, default 3 (REQ-par-002, D-P1). */
+  cap?: number
+  /** 'cancel' cancels only this item — siblings' signals stay untouched (REQ-par-003). */
+  choiceFor: (
+    info: VideoInfo,
+  ) => DownloadChoice | 'playlist' | 'cancel' | Promise<DownloadChoice | 'playlist' | 'cancel'>
+  onItemState: (itemId: string, status: ItemStateStatus) => void
+  onProgress: (itemId: string, progress: DownloadProgress) => void
+  /** Fires once when the pool drains — aggregation lands with T3b (REQ-par-004). */
+  onAllDone: (done: DoneInfo) => void
+  deps?: QueueDeps
+}
+
+export type ParallelQueue = {
+  /** Enqueue an item; returns its itemId. Never awaits the pool (REQ-par-001). */
+  start: (item: QueueItem) => string
+  /** Abort every running item; queued items never start; outcome marked cancelled (REQ-par-010/011). */
+  cancelAll: () => void
+  /** Partial aggregation of settled items, for early-exit reporting (REQ-par-019). */
+  currentOutcome: () => DoneInfo
+  /** True while any item is running or queued. */
+  hasActive: () => boolean
+}
+
+type ParallelQueueEntry = {item: QueueItem; itemId: string; controller: AbortController}
+
+/**
+ * Stateful closure factory (D1, D9 pattern — DI'd like runQueue): owns a FIFO
+ * pool capped at `cap` (default 3) concurrent tasks with one AbortController
+ * per item. pump() starts the queue head whenever a slot frees (REQ-par-002);
+ * cancelAll() aborts every running controller and drops queued items so they
+ * never start (REQ-par-010). Each task runs the shared runItem pipeline with
+ * the item's own signal (D2) — a per-item abort or failure never touches a
+ * sibling's signal (REQ-par-003). All state is closure-local: a parallel run
+ * leaves nothing behind for a later runQueue run (REQ-par-022 s2).
+ */
+export function createParallelQueue(opts: ParallelQueueOptions): ParallelQueue {
+  const cap = opts.cap ?? 3
+  const active = new Set<string>()
+  const queue: ParallelQueueEntry[] = []
+  // every live item (queued or running) so cancelAll can abort all of them
+  const controllers = new Map<string, AbortController>()
+  const outcome: DoneInfo = {filepaths: [], errors: [], cancelled: false, aborted: false}
+  let nextId = 0
+
+  const baseRunOpts: Omit<QueueRunOptions, 'choiceFor'> = {
+    ytdlp: opts.ytdlp,
+    outDir: opts.outDir,
+    ffmpeg: opts.ffmpeg,
+    resume: opts.resume,
+    cookies: opts.cookies,
+    embedMetadata: opts.embedMetadata,
+    subs: opts.subs,
+    noUpdate: opts.noUpdate,
+  }
+
+  function itemHooks(itemId: string): ItemHooks {
+    return {
+      onRetry: () => opts.onItemState(itemId, 'refreshing'),
+      onProgress: progress => opts.onProgress(itemId, progress),
+      onProcessing: () => opts.onItemState(itemId, 'processing'),
+    }
+  }
+
+  function runTask(entry: ParallelQueueEntry): void {
+    active.add(entry.itemId)
+    opts.onItemState(entry.itemId, 'probing')
+    const runOpts: QueueRunOptions = {
+      ...baseRunOpts,
+      choiceFor: async info => {
+        opts.onItemState(entry.itemId, 'picking')
+        const result = await opts.choiceFor(info)
+        if (result !== 'cancel') opts.onItemState(entry.itemId, 'downloading')
+        return result
+      },
+    }
+    void (async () => {
+      try {
+        const result = await runItem(entry.item, runOpts, entry.controller.signal, itemHooks(entry.itemId), opts.deps)
+        outcome.filepaths.push(...result.filepaths)
+        outcome.errors.push(...result.errors)
+        opts.onItemState(entry.itemId, result.errors.length > 0 ? 'error' : 'done')
+      } catch (error) {
+        // runItem catches its own failures; this guards a rejecting choiceFor
+        outcome.errors.push(error instanceof Error ? error.message : String(error))
+        opts.onItemState(entry.itemId, 'error')
+      } finally {
+        active.delete(entry.itemId)
+        controllers.delete(entry.itemId)
+        pump()
+      }
+    })()
+  }
+
+  // start the queue head while slots are free — the slot-freeing trigger after
+  // every task settle (D3)
+  function pump(): void {
+    while (active.size < cap && queue.length > 0) {
+      runTask(queue.shift()!)
+    }
+  }
+
+  function start(item: QueueItem): string {
+    const itemId = `item-${nextId++}`
+    const controller = new AbortController()
+    queue.push({item, itemId, controller})
+    controllers.set(itemId, controller)
+    opts.onItemState(itemId, 'queued')
+    pump()
+    return itemId
+  }
+
+  function cancelAll(): void {
+    if (outcome.cancelled) return
+    outcome.cancelled = true
+    outcome.aborted = true
+    // queued items never start (REQ-par-010); aborting their controllers too
+    // guarantees nothing can begin after this point
+    queue.splice(0)
+    for (const controller of controllers.values()) controller.abort()
+  }
+
+  // partial aggregation for early exit — copies so callers can't corrupt the
+  // driver's own state (REQ-par-019)
+  function currentOutcome(): DoneInfo {
+    return {...outcome, filepaths: [...outcome.filepaths], errors: [...outcome.errors]}
+  }
+
+  function hasActive(): boolean {
+    return active.size > 0 || queue.length > 0
+  }
+
+  return {start, cancelAll, currentOutcome, hasActive}
+}
+
 export type ScriptableOptions = {
   outDir: string
   scriptable: 'best' | 'mp3'
