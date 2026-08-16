@@ -1,4 +1,4 @@
-# herlink
+# Herlink
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
@@ -11,8 +11,6 @@ Download videos from YouTube, X/Twitter, Instagram, TikTok and
 1,600+ other sites — right from your terminal. Paste a url, pick a
 resolution (or audio-only mp3), done. No popups, no fake download buttons,
 no sketchy redirects.
-
-<img src="assets/home.png" alt="herlink home screen — paste a link and hit grab" width="100%">
 
 ## Install
 
@@ -48,11 +46,13 @@ button, the format list and the footer hints are all clickable, and
 clicking the logo takes you back home. Files are saved to `~/Downloads`,
 and the file path is printed to your terminal when you're done.
 
-Multiple urls (or a `--file`) download one after another — you pick the
-format for each, `esc` cancels the rest, and interrupted downloads keep
-their `.part` files so `--continue` can resume them. Playlist urls offer
-a "download all N videos" option (also via `--playlist-start`/`--playlist-end`
-range flags).
+Multiple urls (or a `--file`) download **in parallel** — each video gets
+its own row with a progress bar, and the screen shows a summary when
+everything finishes. Paste another url while downloads run: herlink joins
+it to the running queue instead of starting a second batch. Playlist urls
+offer a "download all N videos" option (also via `--playlist-start`/
+`--playlist-end` range flags). Interrupted downloads keep their `.part`
+files so `--continue` can resume them.
 
 ### Flags
 
@@ -73,8 +73,6 @@ The `auto` theme resolves to the matte-black dark palette — the app's
 primary environment is a dark Termux terminal. Press `^t` or click the
 theme control in the footer to cycle through `auto`, `light`, and `dark`
 for the current session.
-
-<img src="assets/download-options.png" alt="herlink format picker — resolutions with estimated file sizes, plus audio-only mp3" width="100%">
 
 ## How it works
 
@@ -106,7 +104,7 @@ To try it as a global command without publishing: `npm link`, then run
 - [x] Publish to npm (`npm i -g herlink` / `npx herlink`)
 - [x] `--best` / `--mp3` flags to skip the picker (scriptable mode)
 - [x] `-o <dir>` to choose the output folder
-- [x] Batch queue: multiple urls / `--file`, sequential downloads
+- [x] Batch queue: multiple urls / `--file`, parallel downloads
 - [x] Playlist and thread-with-multiple-videos support
 - [x] Resume (`--continue`), cookies (`--cookies`), subtitles (`--subs`),
       metadata embedding (`--embed-metadata`)
