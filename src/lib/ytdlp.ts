@@ -39,6 +39,30 @@ function commandWorks(cmd: string, args: string[]): Promise<boolean> {
   })
 }
 
+// youtube extraction fix (yt-dlp #14680): since Oct 2025 youtube requires an
+// external JS runtime for full extraction. On Termux node is available via
+// yt-dlp-ejs; on desktop any bundled or system JS runtime works. Without the
+// flag yt-dlp degrades to android_vr only — video formats may be missing.
+// Snaptube/NewPipe use InnerTube ANDROID clients directly (no JS needed);
+// yt-dlp's android_vr works the same way for most videos. The JS runtime is
+// only needed for web_safari fallback when android_vr isn't enough.
+export function youtubeFixArgs(hasNode: boolean): string[] {
+  return hasNode ? ['--js-runtimes', 'node'] : []
+}
+
+// the node check is a subprocess spawn — resolve it ONCE and reuse the result
+// for every probe/download (a per-call spawn would be wasteful); the resolved
+// fix args are passed into probe/buildDownloadArgs so both stay pure
+let nodeOnPath: Promise<boolean> | undefined
+function hasNodeRuntime(): Promise<boolean> {
+  nodeOnPath ??= commandWorks('node', ['--version'])
+  return nodeOnPath
+}
+
+async function resolvedYoutubeFixArgs(): Promise<string[]> {
+  return youtubeFixArgs(await hasNodeRuntime())
+}
+
 /**
  * Resolve a usable yt-dlp binary: system install first, then a previously
  * downloaded copy, then download the standalone binary from GitHub releases.
@@ -244,8 +268,14 @@ export async function probe(
   signal?: AbortSignal,
   cookies?: string,
   noUpdate?: boolean,
+  fixArgs?: string[],
 ): Promise<ProbeResult> {
-  const argv = ['-J', '--no-playlist', '--no-warnings']
+  const argv = [
+    ...(fixArgs ?? (await resolvedYoutubeFixArgs())),
+    '-J',
+    '--no-playlist',
+    '--no-warnings',
+  ]
   if (cookies) argv.push('--cookies', cookies)
   if (noUpdate) argv.push('--no-update')
   argv.push(url)
@@ -422,9 +452,11 @@ export type DownloadArgs = {
 }
 
 // pure aside from a call-time env read, so the Termux/desktop argument sets
-// are testable without spawning yt-dlp
-export function buildDownloadArgs(opts: DownloadArgs): string[] {
+// are testable without spawning yt-dlp; fixArgs (the youtube extraction fix)
+// is resolved once upstream and threaded in so the golden tests stay exact
+export function buildDownloadArgs(opts: DownloadArgs, fixArgs: string[] = []): string[] {
   const args = [
+    ...fixArgs,
     ...(opts.infoJsonPath ? ['--load-info-json', opts.infoJsonPath] : [opts.url]),
     ...(opts.cookies ? ['--cookies', opts.cookies] : []),
     ...opts.choice.args,
@@ -468,12 +500,12 @@ export function buildDownloadArgs(opts: DownloadArgs): string[] {
   return args
 }
 
-export function download(
+export async function download(
   opts: DownloadArgs & {ytdlp: string},
   handlers: DownloadHandlers,
   signal?: AbortSignal,
 ): Promise<string> {
-  const args = buildDownloadArgs(opts)
+  const args = buildDownloadArgs(opts, await resolvedYoutubeFixArgs())
 
   return new Promise((resolve, reject) => {
     const child = spawn(opts.ytdlp, args, {signal})
