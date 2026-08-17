@@ -255,6 +255,13 @@ test('buildDownloadArgs() on desktop is unchanged (no --restrict-filenames)', ()
       'https://example.com/v',
       '-f',
       'bv*+ba/b',
+      // Multi-client fallback and reliability flags
+      '--extractor-args',
+      'youtube:player_client=android_vr,tv,web_embedded',
+      '--sleep-requests',
+      '1',
+      '--extractor-retries',
+      '3',
       '--no-playlist',
       '--no-warnings',
       '--newline',
@@ -291,6 +298,13 @@ test('buildDownloadArgs() adds --continue after the choice args when resume is s
       '-f',
       'bv*+ba/b',
       '--continue',
+      // Multi-client fallback and reliability flags
+      '--extractor-args',
+      'youtube:player_client=android_vr,tv,web_embedded',
+      '--sleep-requests',
+      '1',
+      '--extractor-retries',
+      '3',
       '--no-playlist',
       '--no-warnings',
       '--newline',
@@ -328,6 +342,13 @@ test('buildDownloadArgs() inserts --cookies right after the url when cookies are
       '/tmp/cookies.txt',
       '-f',
       'bv*+ba/b',
+      // Multi-client fallback and reliability flags
+      '--extractor-args',
+      'youtube:player_client=android_vr,tv,web_embedded',
+      '--sleep-requests',
+      '1',
+      '--extractor-retries',
+      '3',
       '--no-playlist',
       '--no-warnings',
       '--newline',
@@ -447,6 +468,14 @@ const AUDIO_CHOICE: DownloadChoice = {
 }
 
 const DESKTOP_TAIL = [
+  // Multi-client fallback: android_vr (most reliable, no PO token) → tv → web_embedded
+  '--extractor-args',
+  'youtube:player_client=android_vr,tv,web_embedded',
+  // Rate limiting and retry for reliability
+  '--sleep-requests',
+  '1',
+  '--extractor-retries',
+  '3',
   '--no-playlist',
   '--no-warnings',
   '--newline',
@@ -675,11 +704,18 @@ test('buildDownloadArgs() with a playlistIndex pins --playlist-start/end and omi
       'https://example.com/pl',
       '-f',
       'bv*+ba/b',
+      // Multi-client fallback and reliability flags
+      '--extractor-args',
+      'youtube:player_client=android_vr,tv,web_embedded',
+      '--sleep-requests',
+      '1',
+      '--extractor-retries',
+      '3',
       '--playlist-start',
       '2',
       '--playlist-end',
       '2',
-      ...DESKTOP_TAIL.slice(1),
+      ...DESKTOP_TAIL.slice(DESKTOP_TAIL.indexOf('--no-warnings')),
     ])
   } finally {
     restoreTermux()
@@ -700,7 +736,19 @@ test('buildDownloadArgs() in playlist mode without an index downloads the whole 
     )
     // D13: playlist_count unknown — single yt-dlp run, no --no-playlist and
     // no per-entry window
-    assert.deepEqual(args, ['https://example.com/pl', '-f', 'bv*+ba/b', ...DESKTOP_TAIL.slice(1)])
+    assert.deepEqual(args, [
+      'https://example.com/pl',
+      '-f',
+      'bv*+ba/b',
+      // Multi-client fallback and reliability flags
+      '--extractor-args',
+      'youtube:player_client=android_vr,tv,web_embedded',
+      '--sleep-requests',
+      '1',
+      '--extractor-retries',
+      '3',
+      ...DESKTOP_TAIL.slice(DESKTOP_TAIL.indexOf('--no-warnings')),
+    ])
   } finally {
     restoreTermux()
   }
@@ -891,7 +939,20 @@ test('buildDownloadArgs() adds --no-update after the choice args when requested 
     )
     // golden array — --no-update lands between choice.args and the tail,
     // suppressing yt-dlp's 90-day stale warning (REQ-022)
-    assert.deepEqual(args, ['https://example.com/v', '-f', 'bv*+ba/b', '--no-update', ...DESKTOP_TAIL])
+    assert.deepEqual(args, [
+      'https://example.com/v',
+      '-f',
+      'bv*+ba/b',
+      '--no-update',
+      // Multi-client fallback and reliability flags
+      '--extractor-args',
+      'youtube:player_client=android_vr,tv,web_embedded',
+      '--sleep-requests',
+      '1',
+      '--extractor-retries',
+      '3',
+      ...DESKTOP_TAIL.slice(DESKTOP_TAIL.indexOf('--no-playlist')),
+    ])
   } finally {
     restoreTermux()
   }
