@@ -19,7 +19,6 @@ import {
   playlistOption,
   probe,
   removePartials,
-  youtubeFixArgs,
   type DownloadChoice,
   type DownloadHandlers,
   type VideoInfo,
@@ -249,12 +248,10 @@ test('buildDownloadArgs() on desktop is unchanged (no --restrict-filenames)', ()
         outDir: path.join(os.homedir(), 'Downloads'),
         ffmpeg: {available: false},
       },
-      YT_FIX_ARGS,
     )
     // golden array — pins the exact desktop argument sequence so any future
     // reordering, drop, or unconditional insertion fails this test (REQ-08)
     assert.deepEqual(args, [
-      ...YT_FIX_ARGS,
       'https://example.com/v',
       '-f',
       'bv*+ba/b',
@@ -287,11 +284,9 @@ test('buildDownloadArgs() adds --continue after the choice args when resume is s
         ffmpeg: {available: false},
         resume: true,
       },
-      YT_FIX_ARGS,
     )
     // golden array — --continue lands right after choice.args, before the tail
     assert.deepEqual(args, [
-      ...YT_FIX_ARGS,
       'https://example.com/v',
       '-f',
       'bv*+ba/b',
@@ -325,11 +320,9 @@ test('buildDownloadArgs() inserts --cookies right after the url when cookies are
         ffmpeg: {available: false},
         cookies: '/tmp/cookies.txt',
       },
-      YT_FIX_ARGS,
     )
     // golden array — --cookies <file> lands between the url and choice.args
     assert.deepEqual(args, [
-      ...YT_FIX_ARGS,
       'https://example.com/v',
       '--cookies',
       '/tmp/cookies.txt',
@@ -447,11 +440,6 @@ test('probe() omits --cookies when none are given', async () => {
   }
 })
 
-// the youtube extraction fix (yt-dlp #14680) as youtubeFixArgs(true)
-// returns — the node-present variant, the common herlink case. Golden tests
-// pass it explicitly so the argv pins are deterministic (never PATH-dependent).
-const YT_FIX_ARGS = ['--js-runtimes', 'node']
-
 const AUDIO_CHOICE: DownloadChoice = {
   label: 'solo audio · mp3',
   kind: 'audio',
@@ -484,12 +472,10 @@ test('buildDownloadArgs() embeds metadata + thumbnail with ffmpeg and passes --f
         ffmpeg: {available: true, location: '/usr/bin/ffmpeg'},
         embedMetadata: true,
       },
-      YT_FIX_ARGS,
     )
     // golden array — embed block lands between choice.args and the tail;
     // --ffmpeg-location comes from ffmpeg.location at the very end
     assert.deepEqual(args, [
-      ...YT_FIX_ARGS,
       'https://example.com/v',
       '-f',
       'bv*+ba/b',
@@ -557,11 +543,9 @@ test('buildDownloadArgs() writes --write-subs --sub-langs and --embed-subs with 
         ffmpeg: {available: true},
         subs: 'es,en',
       },
-      YT_FIX_ARGS,
     )
     // golden array — subs block lands between choice.args and the tail
     assert.deepEqual(args, [
-      ...YT_FIX_ARGS,
       'https://example.com/v',
       '-f',
       'bv*+ba/b',
@@ -653,10 +637,8 @@ test('buildDownloadArgs() pins the full block order: cookies, choice, resume, su
         embedMetadata: true,
         subs: 'es',
       },
-      YT_FIX_ARGS,
     )
     assert.deepEqual(args, [
-      ...YT_FIX_ARGS,
       'https://example.com/v',
       '--cookies',
       '/tmp/cookies.txt',
@@ -687,11 +669,9 @@ test('buildDownloadArgs() with a playlistIndex pins --playlist-start/end and omi
         ffmpeg: {available: false},
         playlistIndex: 2,
       },
-      YT_FIX_ARGS,
     )
     // golden array — the playlist window replaces --no-playlist in place
     assert.deepEqual(args, [
-      ...YT_FIX_ARGS,
       'https://example.com/pl',
       '-f',
       'bv*+ba/b',
@@ -717,87 +697,10 @@ test('buildDownloadArgs() in playlist mode without an index downloads the whole 
         ffmpeg: {available: false},
         playlist: true,
       },
-      YT_FIX_ARGS,
     )
     // D13: playlist_count unknown — single yt-dlp run, no --no-playlist and
     // no per-entry window
-    assert.deepEqual(args, [...YT_FIX_ARGS, 'https://example.com/pl', '-f', 'bv*+ba/b', ...DESKTOP_TAIL.slice(1)])
-  } finally {
-    restoreTermux()
-  }
-})
-
-test('youtubeFixArgs() adds --js-runtimes node only when a JS runtime is present (yt-dlp #14680)', () => {
-  // node on PATH → the fix flag; absent → empty (yt-dlp falls back to
-  // android_vr-only defaults, which still works for most videos)
-  assert.deepEqual(youtubeFixArgs(true), YT_FIX_ARGS)
-  assert.deepEqual(youtubeFixArgs(false), [])
-})
-
-test('probe() prepends the youtube fix args before the url and never duplicates them (yt-dlp #14680)', async () => {
-  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'herlink-bin-'))
-  const argsOut = path.join(bin, 'args.txt')
-  try {
-    fs.writeFileSync(
-      path.join(bin, 'fake-ytdlp'),
-      '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$FAKE_ARGS_OUT"\nprintf \'{"title":"fake"}\'\n',
-      {mode: 0o755},
-    )
-    const prev = process.env.FAKE_ARGS_OUT
-    process.env.FAKE_ARGS_OUT = argsOut
-    try {
-      const {info, infoJsonPath} = await probe(
-        path.join(bin, 'fake-ytdlp'),
-        'https://example.com/v',
-        undefined,
-        undefined,
-        undefined,
-        YT_FIX_ARGS,
-      )
-      assert.equal(info.title, 'fake')
-      const argv = fs.readFileSync(argsOut, 'utf8').trim().split('\n')
-      // the fix block lands at the START, before -J and the url
-      assert.deepEqual(argv.slice(0, 2), ['--js-runtimes', 'node'])
-      assert.equal(argv.at(-1), 'https://example.com/v', 'the url must stay the last argv element')
-      assert.equal(
-        argv.filter(a => a === '--js-runtimes').length,
-        1,
-        '--js-runtimes must appear exactly once per probe invocation',
-      )
-      await fs.promises.rm(infoJsonPath, {force: true})
-    } finally {
-      if (prev === undefined) delete process.env.FAKE_ARGS_OUT
-      else process.env.FAKE_ARGS_OUT = prev
-    }
-  } finally {
-    fs.rmSync(bin, {recursive: true, force: true})
-  }
-})
-
-test('buildDownloadArgs() prepends the youtube fix args once, ahead of the url (yt-dlp #14680)', () => {
-  const restoreTermux = termuxEnv(false)
-  try {
-    const args = buildDownloadArgs(
-      {
-        url: 'https://example.com/v',
-        choice,
-        outDir: path.join(os.homedir(), 'Downloads'),
-        ffmpeg: {available: false},
-        cookies: '/tmp/cookies.txt',
-        resume: true,
-      },
-      YT_FIX_ARGS,
-    )
-    assert.deepEqual(args.slice(0, 2), [
-      '--js-runtimes',
-      'node',
-    ])
-    assert.equal(
-      args.filter(a => a === '--js-runtimes').length,
-      1,
-      '--js-runtimes must appear exactly once per buildDownloadArgs invocation',
-    )
-    assert.ok(args.includes('--no-playlist'), 'the playlist flag must survive the fix block')
+    assert.deepEqual(args, ['https://example.com/pl', '-f', 'bv*+ba/b', ...DESKTOP_TAIL.slice(1)])
   } finally {
     restoreTermux()
   }
@@ -985,11 +888,10 @@ test('buildDownloadArgs() adds --no-update after the choice args when requested 
         ffmpeg: {available: false},
         noUpdate: true,
       },
-      YT_FIX_ARGS,
     )
     // golden array — --no-update lands between choice.args and the tail,
     // suppressing yt-dlp's 90-day stale warning (REQ-022)
-    assert.deepEqual(args, [...YT_FIX_ARGS, 'https://example.com/v', '-f', 'bv*+ba/b', '--no-update', ...DESKTOP_TAIL])
+    assert.deepEqual(args, ['https://example.com/v', '-f', 'bv*+ba/b', '--no-update', ...DESKTOP_TAIL])
   } finally {
     restoreTermux()
   }

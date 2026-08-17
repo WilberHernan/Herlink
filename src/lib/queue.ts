@@ -85,8 +85,7 @@ export type ItemHooks = {
  * parallelQueue passes the item's controller.signal. Drivers interpret the
  * result: runQueue maps an item cancel to `cancelled=true, break`
  * (byte-identical legacy behavior); parallelQueue maps it to an item-only
- * cancel. playlistIndex items always re-extract — the probe's infoJsonPath is
- * never reused for playlist entries (REQ-019).
+ * cancel. Downloads always re-extract — never reuse the probe's cached info.
  */
 export async function runItem(
   item: QueueItem,
@@ -106,11 +105,9 @@ export async function runItem(
     return {filepaths, errors, cancelled}
   }
   let info: VideoInfo
-  let infoJsonPath: string | undefined
   try {
     const result = await doProbe(opts.ytdlp, item.url, signal, opts.cookies, opts.noUpdate)
     info = result.info
-    infoJsonPath = result.infoJsonPath
   } catch (error) {
     if (signal?.aborted) {
       cancelled = true
@@ -139,8 +136,7 @@ export async function runItem(
   }
   if (choice === 'playlist') {
     // "descargar los N videos" (REQ-018): iterate every entry with a fresh
-    // extraction per entry — the probe's infoJsonPath is never reused for
-    // playlist items (REQ-019). The option carries no format choice, so
+    // extraction per entry. The option carries no format choice, so
     // entries download with the best available format (like --best).
     if (!isPlaylistInfo(info)) {
       errors.push(`“${item.url}”: no se pudo detectar una playlist`)
@@ -207,11 +203,10 @@ export async function runItem(
     noUpdate: opts.noUpdate,
   }
   try {
-    // playlist items (playlistIndex) always re-extract — never reuse the
-    // probe's infoJsonPath (REQ-019)
+    // always re-extract — probe's infoJsonPath URLs expire before download starts
     filepaths.push(
       await doDownload(
-        {...base, url: item.url, ...(item.playlistIndex ? {playlistIndex: item.playlistIndex} : {infoJsonPath})},
+        {...base, url: item.url, ...(item.playlistIndex ? {playlistIndex: item.playlistIndex} : {})},
         handlers,
         signal,
       ),
@@ -221,7 +216,7 @@ export async function runItem(
       cancelled = true
       return {filepaths, errors, cancelled}
     }
-    // media urls in the cached info can expire — retry with a fresh extraction
+    // transient network/server error — retry once with a fresh extraction
     hooks.onRetry?.()
     try {
       filepaths.push(
@@ -272,9 +267,8 @@ export async function runItem(
 /**
  * Sequential download driver shared by the TTY app, batch and scriptable
  * paths (D9). Probes each item, asks the caller for a choice, downloads with
- * the probe's cached info and retries with a fresh extraction when that
- * expires (mirrors the previous app.tsx behavior). Each item runs through the
- * shared runItem pipeline (D2); an item cancel aborts the whole queue.
+ * a fresh extraction each time. Each item runs through the shared runItem
+ * pipeline (D2); an item cancel aborts the whole queue.
  */
 export async function runQueue(
   items: QueueItem[],

@@ -84,7 +84,7 @@ test('runQueue records a mid-queue failure and continues with remaining items (R
       },
     },
   )
-  // b fails on both attempts (cached-info and fresh-extraction retry)
+  // b fails on both attempts (first attempt and retry)
   assert.deepEqual(downloads, [
     'https://a.example/v',
     'https://b.example/v',
@@ -195,7 +195,7 @@ test('runQueue treats a choiceFor cancel verdict as a queue cancel, keeping fini
   assert.deepEqual(outcome.filepaths, ['/tmp/Downloads/a.mp4'])
 })
 
-test('runQueue retries with a fresh extraction when the cached-info download fails', async () => {
+test('runQueue retries on transient download error', async () => {
   let downloads = 0
   let retries = 0
   const outcome = await runQueue(
@@ -209,15 +209,15 @@ test('runQueue retries with a fresh extraction when the cached-info download fai
     },
     {
       probe: async () => ({info: info(), infoJsonPath: '/tmp/info.json'}),
-      download: async (opts: DownloadArgs & {ytdlp: string}) => {
+      download: async () => {
         downloads++
-        if (opts.infoJsonPath) throw new Error('media expirada')
+        if (downloads === 1) throw new Error('transient network error')
         return '/tmp/Downloads/video.mp4'
       },
     },
   )
   assert.equal(downloads, 2)
-  assert.equal(retries, 1, 'onRetry must fire before the fresh-extraction attempt')
+  assert.equal(retries, 1, 'onRetry must fire before the retry attempt')
   assert.deepEqual(outcome.filepaths, ['/tmp/Downloads/video.mp4'])
   assert.equal(outcome.errors.length, 0)
 })
@@ -252,7 +252,7 @@ test('runQueue falls back to audio-only once when the video stream is DRM-blocke
       },
     },
   )
-  assert.deepEqual(attempts, ['video', 'video', 'audio'], 'cached video + fresh-retry video + audio fallback')
+  assert.deepEqual(attempts, ['video', 'video', 'audio'], 'first attempt + retry + audio fallback')
   assert.equal(retries, 1, 'the fresh-extraction retry must fire before the fallback')
   assert.equal(audioFallbacks, 1, 'onAudioFallback must fire exactly once')
   assert.deepEqual(outcome.filepaths, ['/tmp/Downloads/audio.m4a'])
@@ -285,7 +285,6 @@ test('runQueue does NOT fall back to audio for a non-DRM failure — the error i
 
 test('runQueue threads item.playlistIndex into the download (D8)', async () => {
   let seenIndex: number | undefined
-  let seenInfoJsonPath: string | undefined
   const outcome = await runQueue(
     [{url: 'https://example.com/pl', playlistIndex: 3}],
     {ytdlp: 'yt-dlp', outDir: '/tmp/Downloads', ffmpeg: {available: false}, choiceFor: () => choice},
@@ -293,13 +292,11 @@ test('runQueue threads item.playlistIndex into the download (D8)', async () => {
       probe: async () => ({info: info(), infoJsonPath: '/tmp/info.json'}),
       download: async (opts: DownloadArgs & {ytdlp: string}) => {
         seenIndex = opts.playlistIndex
-        seenInfoJsonPath = opts.infoJsonPath
         return '/tmp/Downloads/entry.mp4'
       },
     },
   )
   assert.equal(seenIndex, 3, 'playlistIndex must reach the download')
-  assert.equal(seenInfoJsonPath, undefined, 'playlist items must never reuse the probe infoJsonPath (REQ-019)')
   assert.deepEqual(outcome.filepaths, ['/tmp/Downloads/entry.mp4'])
 })
 
@@ -316,7 +313,6 @@ test('runQueue expands a playlist probe into per-entry downloads when the playli
       download: async (opts: DownloadArgs & {ytdlp: string}) => {
         calls.push(`download:${opts.playlistIndex}`)
         assert.equal(opts.playlist, true, 'per-entry downloads must be in playlist mode')
-        assert.equal(opts.infoJsonPath, undefined, 'each entry re-extracts — no --load-info-json (REQ-019)')
         assert.equal(opts.choice.kind, 'video', 'entries download with the best-video choice (like --best)')
         return `/tmp/Downloads/entry-${opts.playlistIndex}.mp4`
       },
@@ -371,7 +367,6 @@ test('runQueue falls back to a single whole-playlist run when playlist_count is 
   )
   assert.equal(seen?.playlist, true, 'D13 run must be in playlist mode (no --no-playlist)')
   assert.equal(seen?.playlistIndex, undefined, 'unknown count → no per-entry window')
-  assert.equal(seen?.infoJsonPath, undefined, 'playlist items never reuse the probe infoJsonPath (REQ-019)')
   assert.deepEqual(outcome.filepaths, ['/tmp/Downloads/all.mp4'])
   assert.equal(outcome.errors.length, 0)
 })
