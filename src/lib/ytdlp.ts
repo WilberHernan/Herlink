@@ -246,9 +246,6 @@ export async function probe(
   noUpdate?: boolean,
 ): Promise<ProbeResult> {
   const argv = ['-J', '--no-playlist', '--no-warnings']
-  // Multi-client fallback: android_vr (most reliable, no PO token) → tv → web_embedded
-  // This mirrors how professional downloaders (Snaptube, NewPipe) try multiple clients
-  argv.push('--extractor-args', 'youtube:player_client=android_vr,tv,web_embedded')
   if (cookies) argv.push('--cookies', cookies)
   if (noUpdate) argv.push('--no-update')
   argv.push(url)
@@ -438,10 +435,6 @@ export function buildDownloadArgs(opts: DownloadArgs): string[] {
     ...(opts.embedMetadata && opts.ffmpeg.available ? ['--embed-metadata', '--embed-thumbnail'] : []),
     // --no-update: suppress the stale-binary warning (REQ-022)
     ...(opts.noUpdate ? ['--no-update'] : []),
-    // Multi-client fallback: android_vr (most reliable, no PO token) → tv → web_embedded
-    // This mirrors how professional downloaders (Snaptube, NewPipe) try multiple clients
-    '--extractor-args',
-    'youtube:player_client=android_vr,tv,web_embedded',
     // Rate limiting: 1s between requests to avoid throttling
     '--sleep-requests',
     '1',

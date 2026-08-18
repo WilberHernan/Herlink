@@ -255,9 +255,7 @@ test('buildDownloadArgs() on desktop is unchanged (no --restrict-filenames)', ()
       'https://example.com/v',
       '-f',
       'bv*+ba/b',
-      // Multi-client fallback and reliability flags
-      '--extractor-args',
-      'youtube:player_client=android_vr,tv,web_embedded',
+      // Rate limiting and retry for reliability
       '--sleep-requests',
       '1',
       '--extractor-retries',
@@ -298,9 +296,7 @@ test('buildDownloadArgs() adds --continue after the choice args when resume is s
       '-f',
       'bv*+ba/b',
       '--continue',
-      // Multi-client fallback and reliability flags
-      '--extractor-args',
-      'youtube:player_client=android_vr,tv,web_embedded',
+      // Rate limiting and retry for reliability
       '--sleep-requests',
       '1',
       '--extractor-retries',
@@ -342,9 +338,7 @@ test('buildDownloadArgs() inserts --cookies right after the url when cookies are
       '/tmp/cookies.txt',
       '-f',
       'bv*+ba/b',
-      // Multi-client fallback and reliability flags
-      '--extractor-args',
-      'youtube:player_client=android_vr,tv,web_embedded',
+      // Rate limiting and retry for reliability
       '--sleep-requests',
       '1',
       '--extractor-retries',
@@ -468,9 +462,6 @@ const AUDIO_CHOICE: DownloadChoice = {
 }
 
 const DESKTOP_TAIL = [
-  // Multi-client fallback: android_vr (most reliable, no PO token) → tv → web_embedded
-  '--extractor-args',
-  'youtube:player_client=android_vr,tv,web_embedded',
   // Rate limiting and retry for reliability
   '--sleep-requests',
   '1',
@@ -704,9 +695,7 @@ test('buildDownloadArgs() with a playlistIndex pins --playlist-start/end and omi
       'https://example.com/pl',
       '-f',
       'bv*+ba/b',
-      // Multi-client fallback and reliability flags
-      '--extractor-args',
-      'youtube:player_client=android_vr,tv,web_embedded',
+      // Rate limiting and retry for reliability
       '--sleep-requests',
       '1',
       '--extractor-retries',
@@ -740,9 +729,7 @@ test('buildDownloadArgs() in playlist mode without an index downloads the whole 
       'https://example.com/pl',
       '-f',
       'bv*+ba/b',
-      // Multi-client fallback and reliability flags
-      '--extractor-args',
-      'youtube:player_client=android_vr,tv,web_embedded',
+      // Rate limiting and retry for reliability
       '--sleep-requests',
       '1',
       '--extractor-retries',
@@ -944,9 +931,7 @@ test('buildDownloadArgs() adds --no-update after the choice args when requested 
       '-f',
       'bv*+ba/b',
       '--no-update',
-      // Multi-client fallback and reliability flags
-      '--extractor-args',
-      'youtube:player_client=android_vr,tv,web_embedded',
+      // Rate limiting and retry for reliability
       '--sleep-requests',
       '1',
       '--extractor-retries',
