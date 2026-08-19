@@ -488,6 +488,8 @@ export function download(
     let part = 0
     let totalParts = 1
     let lastDownloaded = 0
+    let completedBytes = 0
+    let currentPartTotal = 0
     let buffer = ''
     // every file yt-dlp writes this run, so a cancel can clean up after itself
     const destinations: string[] = []
@@ -502,11 +504,17 @@ export function download(
         if (line.startsWith(PROGRESS_PREFIX)) {
           const [downloaded, total, totalEstimate, speed, eta] = line.slice(PROGRESS_PREFIX.length).split('|')
           const downloadedBytes = toNumber(downloaded) ?? 0
-          if (downloadedBytes < lastDownloaded) part++
+          const totalBytes = toNumber(total) ?? toNumber(totalEstimate)
+          if (downloadedBytes < lastDownloaded) {
+            // new part started — previous part finished, accumulate its total
+            completedBytes += currentPartTotal
+            part++
+          }
           lastDownloaded = downloadedBytes
+          currentPartTotal = totalBytes ?? 0
           handlers.onProgress({
-            downloadedBytes,
-            totalBytes: toNumber(total) ?? toNumber(totalEstimate),
+            downloadedBytes: downloadedBytes + completedBytes,
+            totalBytes: totalBytes != null ? completedBytes + totalBytes : undefined,
             speed: toNumber(speed),
             eta: toNumber(eta),
             part,
