@@ -295,13 +295,22 @@ export type DownloadChoice = {
 
 const MAX_VIDEO_CHOICES = 8
 
+function estimateSize(f: RawFormat, duration?: number): number {
+  if (f.filesize) return f.filesize
+  if (f.filesize_approx) return f.filesize_approx
+  // estimate from bitrate (tbr kbps) × duration when filesize is missing (YouTube often omits it)
+  const bitrate = f.tbr ?? f.abr
+  if (bitrate && duration) return Math.round((bitrate * 1000 / 8) * duration)
+  return 0
+}
+
 export function buildChoices(info: VideoInfo): DownloadChoice[] {
   const formats = info.formats ?? []
   const choices: DownloadChoice[] = []
 
   const audioOnly = formats.filter(f => f.acodec && f.acodec !== 'none' && (!f.vcodec || f.vcodec === 'none'))
   const bestAudio = [...audioOnly].sort((a, b) => (b.abr ?? b.tbr ?? 0) - (a.abr ?? a.tbr ?? 0))[0]
-  const audioSize = bestAudio?.filesize ?? bestAudio?.filesize_approx
+  const audioSize = estimateSize(bestAudio ?? {}, info.duration)
 
   const videos = formats.filter(f => f.vcodec && f.vcodec !== 'none' && f.height)
   const heights = [...new Set(videos.map(f => f.height as number))].sort((a, b) => b - a)
@@ -310,7 +319,7 @@ export function buildChoices(info: VideoInfo): DownloadChoice[] {
     const candidates = videos.filter(f => f.height === height)
     const best = [...candidates].sort((a, b) => scoreVideo(b) - scoreVideo(a))[0]
     const muxed = best.acodec && best.acodec !== 'none'
-    const size = (best.filesize ?? best.filesize_approx ?? 0) + (muxed ? 0 : audioSize ?? 0)
+    const size = estimateSize(best, info.duration) + (muxed ? 0 : audioSize)
     const sizeLabel = size > 0 ? ` · ~${formatBytes(size)}` : ''
     choices.push({
       kind: 'video',
