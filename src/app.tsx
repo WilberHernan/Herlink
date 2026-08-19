@@ -723,13 +723,22 @@ function AppContent({
   }
 
   const rowDetail = (item: ItemState) => {
-    if (item.status === 'downloading' && item.progress) {
-      return item.progress.totalBytes ? (
+    if (item.status === 'downloading') {
+      if (item.progress?.totalBytes) {
+        return (
+          <Box flexDirection="row" justifyContent="flex-end">
+            <ProgressBar percent={item.progress.downloadedBytes / item.progress.totalBytes} width={14} />
+          </Box>
+        )
+      }
+      if (item.progress) {
+        return <Text color={theme.muted}>{indeterminateMeta(item.progress)}</Text>
+      }
+      // no progress yet — compact dots so there's no empty gap before the bar
+      return (
         <Box flexDirection="row" justifyContent="flex-end">
-          <ProgressBar percent={item.progress.downloadedBytes / item.progress.totalBytes} width={14} />
+          <Spinner type="dots" />
         </Box>
-      ) : (
-        <Text color={theme.muted}>{indeterminateMeta(item.progress)}</Text>
       )
     }
     if (item.status === 'processing') {
