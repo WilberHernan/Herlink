@@ -245,7 +245,7 @@ export async function probe(
   cookies?: string,
   noUpdate?: boolean,
 ): Promise<ProbeResult> {
-  const argv = ['-J', '--no-playlist', '--no-warnings']
+  const argv = ['-J', '--no-playlist', '--no-warnings', '--compat-options', 'manifest-filesize-approx']
   if (cookies) argv.push('--cookies', cookies)
   if (noUpdate) argv.push('--no-update')
   argv.push(url)
@@ -500,6 +500,11 @@ export function download(
     let completedBytes = 0
     let currentPartTotal = 0
     let buffer = ''
+    // Throttle progress events to max 1 per 100ms — prevents Ink render
+    // batching from making the UI feel laggy when yt-dlp emits fast
+    let lastProgressTime = 0
+    let pendingProgress: DownloadProgress | null = null
+    let progressFlushTimer: ReturnType<typeof setTimeout> | null = null
     // every file yt-dlp writes this run, so a cancel can clean up after itself
     const destinations: string[] = []
 
@@ -521,14 +526,32 @@ export function download(
           }
           lastDownloaded = downloadedBytes
           currentPartTotal = totalBytes ?? 0
-          handlers.onProgress({
+          const prog: DownloadProgress = {
             downloadedBytes: downloadedBytes + completedBytes,
             totalBytes: totalBytes != null ? completedBytes + totalBytes : undefined,
             speed: toNumber(speed),
             eta: toNumber(eta),
             part,
             totalParts,
-          })
+          }
+          const now = Date.now()
+          if (now - lastProgressTime >= 100) {
+            lastProgressTime = now
+            handlers.onProgress(prog)
+          } else {
+            // buffer latest progress and flush after throttle window
+            pendingProgress = prog
+            if (!progressFlushTimer) {
+              progressFlushTimer = setTimeout(() => {
+                progressFlushTimer = null
+                if (pendingProgress) {
+                  lastProgressTime = Date.now()
+                  handlers.onProgress(pendingProgress)
+                  pendingProgress = null
+                }
+              }, 100 - (now - lastProgressTime))
+            }
+          }
         } else if (line.includes('Downloading 1 format(s):')) {
           // "[info] xxx: Downloading 1 format(s): 395+251" — each id is one file
           totalParts = (line.split('format(s):')[1] ?? '').trim().split('+').length
@@ -552,6 +575,15 @@ export function download(
     })
     child.on('close', code => {
       activeChildren.delete(child)
+      // flush any buffered progress so the final state isn't lost
+      if (progressFlushTimer) {
+        clearTimeout(progressFlushTimer)
+        progressFlushTimer = null
+      }
+      if (pendingProgress) {
+        handlers.onProgress(pendingProgress)
+        pendingProgress = null
+      }
       if (signal?.aborted) {
         // cancelled on purpose — don't leave half-written files behind
         void removePartials(destinations)
