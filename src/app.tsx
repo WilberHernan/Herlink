@@ -724,25 +724,12 @@ function AppContent({
 
   const rowDetail = (item: ItemState) => {
     if (item.status === 'downloading' && item.progress) {
-      const detail =
-        item.progress.totalBytes ? (
-          <ProgressBar percent={item.progress.downloadedBytes / item.progress.totalBytes} width={14} />
-        ) : (
-          <Text color={theme.muted}>{indeterminateMeta(item.progress)}</Text>
-        )
-      // title + bar on the same line when title is available
-      if (item.title) {
-        return (
-          <Box flexDirection="row" justifyContent="space-between">
-            <Text color={theme.muted}>{truncate(item.title.replace(/_/g, ' '), 30)}…</Text>
-            {detail}
-          </Box>
-        )
-      }
-      return (
+      return item.progress.totalBytes ? (
         <Box flexDirection="row" justifyContent="flex-end">
-          {detail}
+          <ProgressBar percent={item.progress.downloadedBytes / item.progress.totalBytes} width={14} />
         </Box>
+      ) : (
+        <Text color={theme.muted}>{indeterminateMeta(item.progress)}</Text>
       )
     }
     if (item.status === 'processing') {
@@ -879,8 +866,8 @@ function AppContent({
                         ? truncate(item.title.replace(/_/g, ' '), 40)
                         : truncate(item.url, 40)}
                     </Text>
-                    {/* hide label when progress bar is visible — bar is self-explanatory */}
-                    {!(item.status === 'downloading' && item.progress) && (
+                    {/* hide label when downloading — title + bar speak for themselves */}
+                    {item.status !== 'downloading' && (
                       <Text bold color={rowColor(item.status)}>
                         {STATUS_LABEL[item.status]}
                       </Text>
