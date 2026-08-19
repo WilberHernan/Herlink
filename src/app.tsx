@@ -164,13 +164,17 @@ const PROGRESS_STATUSES: readonly ItemStateStatus[] = ['downloading', 'processin
  */
 export function itemStateTransition(
   prev: ItemState,
-  event: ItemStateStatus | {type: 'progress'; progress: DownloadProgress},
+  event: ItemStateStatus | {type: 'progress'; progress: DownloadProgress} | {type: 'title'; title: string},
 ): ItemState {
   if (typeof event === 'object') {
-    if (!PROGRESS_STATUSES.includes(prev.status)) {
-      throw new Error(`invalid itemStateTransition: progress event in status ${prev.status}`)
+    if (event.type === 'progress') {
+      if (!PROGRESS_STATUSES.includes(prev.status)) {
+        throw new Error(`invalid itemStateTransition: progress event in status ${prev.status}`)
+      }
+      return {...prev, progress: event.progress}
     }
-    return {...prev, progress: event.progress}
+    // title event: stash the probe title on the row
+    return {...prev, title: event.title}
   }
   if (!VALID_TRANSITIONS[prev.status].includes(event)) {
     throw new Error(`invalid itemStateTransition: ${prev.status} → ${event}`)
@@ -436,6 +440,12 @@ function AppContent({
               return new Map(prev).set(itemId, itemStateTransition(row, status))
             })
           },
+          onTitle: (itemId, title) =>
+            setItems(prev => {
+              const row = prev.get(itemId)
+              if (!row) return prev
+              return new Map(prev).set(itemId, itemStateTransition(row, {type: 'title', title}))
+            }),
           onProgress: (itemId, progress) =>
             setItems(prev => {
               const row = prev.get(itemId)

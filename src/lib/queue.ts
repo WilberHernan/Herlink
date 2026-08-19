@@ -335,6 +335,7 @@ export type ParallelQueueOptions = {
     info: VideoInfo,
   ) => DownloadChoice | 'playlist' | 'cancel' | Promise<DownloadChoice | 'playlist' | 'cancel'>
   onItemState: (itemId: string, status: ItemStateStatus) => void
+  onTitle: (itemId: string, title: string) => void
   onProgress: (itemId: string, progress: DownloadProgress) => void
   /** Fires once when the pool drains — aggregation lands with T3b (REQ-par-004). */
   onAllDone: (done: DoneInfo) => void
@@ -406,6 +407,7 @@ export function createParallelQueue(opts: ParallelQueueOptions): ParallelQueue {
       ...baseRunOpts,
       choiceFor: async info => {
         opts.onItemState(entry.itemId, 'picking')
+        opts.onTitle(entry.itemId, info.title)
         // the picker is open — onAllDone must wait for this item (REQ-par-017)
         pendingPicks++
         try {

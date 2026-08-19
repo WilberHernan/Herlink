@@ -568,6 +568,7 @@ type PqOverrides = Partial<{
   cap: number
   choiceFor: ParallelQueueOptions['choiceFor']
   onItemState: ParallelQueueOptions['onItemState']
+  onTitle: ParallelQueueOptions['onTitle']
   onProgress: ParallelQueueOptions['onProgress']
   onAllDone: ParallelQueueOptions['onAllDone']
 }>
@@ -579,6 +580,7 @@ function makeParallelQueue(deps: QueueDeps, overrides: PqOverrides = {}): Parall
     ffmpeg: {available: false},
     choiceFor: () => pqChoice,
     onItemState: () => {},
+    onTitle: () => {},
     onProgress: () => {},
     onAllDone: () => {},
     ...overrides,
@@ -835,6 +837,7 @@ test('parallelQueue and runQueue are isolated — a parallel run leaves no state
     ffmpeg: {available: false},
     choiceFor: () => pqChoice,
     onItemState: () => {},
+    onTitle: () => {},
     onProgress: () => {},
     onAllDone: () => {},
     deps: {
