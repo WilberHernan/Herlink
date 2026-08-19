@@ -327,6 +327,8 @@ export function buildChoices(info: VideoInfo): DownloadChoice[] {
       args: [
         '-f',
         `bv*[height=${height}]+ba/b[height=${height}]/bv*[height<=${height}]+ba/b`,
+        '-S',
+        'vcodec:avc',
         '--merge-output-format',
         'mp4',
       ],
@@ -337,7 +339,7 @@ export function buildChoices(info: VideoInfo): DownloadChoice[] {
     choices.push({
       kind: 'video',
       label: 'mejor disponible · mp4',
-      args: ['-f', 'bv*+ba/b', '--merge-output-format', 'mp4'],
+      args: ['-f', 'bv*+ba/b', '-S', 'vcodec:avc', '--merge-output-format', 'mp4'],
     })
   }
 
