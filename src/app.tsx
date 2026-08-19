@@ -714,14 +714,21 @@ function AppContent({
 
   const rowDetail = (item: ItemState) => {
     if (item.status === 'downloading' && item.progress) {
-      // the download bar sits right under the url/status pair, right-aligned
-      // and compact — the url owns the left edge (REQ-par-006 layout)
       const detail =
         item.progress.totalBytes ? (
           <ProgressBar percent={item.progress.downloadedBytes / item.progress.totalBytes} width={14} />
         ) : (
           <Text color={theme.muted}>{indeterminateMeta(item.progress)}</Text>
         )
+      // title + bar on the same line when title is available
+      if (item.title) {
+        return (
+          <Box flexDirection="row" justifyContent="space-between">
+            <Text color={theme.muted}>{truncate(item.title.replace(/_/g, ' '), 30)}…</Text>
+            {detail}
+          </Box>
+        )
+      }
       return (
         <Box flexDirection="row" justifyContent="flex-end">
           {detail}
@@ -856,10 +863,18 @@ function AppContent({
               {Array.from(items.entries()).map(([itemId, item]) => (
                 <Box key={itemId} flexDirection="column" width={boxWidth}>
                   <Box justifyContent="space-between">
-                    <Text color={theme.muted}>{truncate(item.url, 40)}</Text>
-                    <Text bold color={rowColor(item.status)}>
-                      {STATUS_LABEL[item.status]}
+                    {/* show title when downloading, URL otherwise */}
+                    <Text color={theme.muted}>
+                      {item.status === 'downloading' && item.title
+                        ? truncate(item.title.replace(/_/g, ' '), 40)
+                        : truncate(item.url, 40)}
                     </Text>
+                    {/* hide label when progress bar is visible — bar is self-explanatory */}
+                    {!(item.status === 'downloading' && item.progress) && (
+                      <Text bold color={rowColor(item.status)}>
+                        {STATUS_LABEL[item.status]}
+                      </Text>
+                    )}
                   </Box>
                   {rowDetail(item)}
                 </Box>
