@@ -723,24 +723,6 @@ function AppContent({
   }
 
   const rowDetail = (item: ItemState) => {
-    if (item.status === 'downloading') {
-      if (item.progress?.totalBytes) {
-        return (
-          <Box flexDirection="row" justifyContent="flex-end">
-            <ProgressBar percent={item.progress.downloadedBytes / item.progress.totalBytes} width={14} />
-          </Box>
-        )
-      }
-      if (item.progress) {
-        return <Text color={theme.muted}>{indeterminateMeta(item.progress)}</Text>
-      }
-      // no progress yet — compact dots so there's no empty gap before the bar
-      return (
-        <Box flexDirection="row" justifyContent="flex-end">
-          <Spinner type="dots" />
-        </Box>
-      )
-    }
     if (item.status === 'processing') {
       return (
         <Text>
@@ -868,21 +850,31 @@ function AppContent({
             <>
               {Array.from(items.entries()).map(([itemId, item]) => (
                 <Box key={itemId} flexDirection="column" width={boxWidth}>
-                  <Box justifyContent="space-between">
-                    {/* show title when downloading, URL otherwise */}
-                    <Text color={theme.muted}>
-                      {item.status === 'downloading' && item.title
-                        ? truncate(item.title.replace(/_/g, ' '), 40)
-                        : truncate(item.url, 40)}
-                    </Text>
-                    {/* hide label when downloading — title + bar speak for themselves */}
-                    {item.status !== 'downloading' && (
+                  {item.status === 'downloading' && item.title ? (
+                    /* downloading: title + bar on the SAME line */
+                    <Box justifyContent="space-between">
+                      <Text color={theme.muted}>{truncate(item.title.replace(/_/g, ' '), 40)}</Text>
+                      <Text>
+                        {item.progress?.totalBytes ? (
+                          <ProgressBar percent={item.progress.downloadedBytes / item.progress.totalBytes} width={14} />
+                        ) : item.progress ? (
+                          <Text color={theme.muted}>{indeterminateMeta(item.progress)}</Text>
+                        ) : (
+                          <Spinner type="dots" />
+                        )}
+                      </Text>
+                    </Box>
+                  ) : (
+                    /* other states: title/url + status label */
+                    <Box justifyContent="space-between">
+                      <Text color={theme.muted}>{truncate(item.url, 40)}</Text>
                       <Text bold color={rowColor(item.status)}>
                         {STATUS_LABEL[item.status]}
                       </Text>
-                    )}
-                  </Box>
-                  {rowDetail(item)}
+                    </Box>
+                  )}
+                  {/* detail line only for non-downloading states (processing, etc.) */}
+                  {item.status !== 'downloading' && rowDetail(item)}
                 </Box>
               ))}
               {queuedCount > 0 && (
