@@ -794,7 +794,7 @@ function AppContent({
 
       {screen === 'picker' && pickerItemId && pickerInfo && (
         <Box width={contentWidth}>
-          <Box flexDirection="column" flexGrow={1} flexBasis={0} justifyContent="center" paddingRight={3}>
+          <Box flexDirection="column" flexGrow={1} flexBasis={0} alignItems="center" justifyContent="center" paddingRight={3}>
             {/* wrapped by hand so continuation lines stay flush left —
                 ink's wrapping keeps the break's space as a 1-cell indent */}
             {wrapText(pickerInfo.title ?? '', Math.max(10, contentWidth - 41)).map((line, index) => (
@@ -809,7 +809,7 @@ function AppContent({
               {pickerInfo.uploader ? ` · ${pickerInfo.uploader}` : ''}
             </Text>
           </Box>
-          <Panel title="Descargar" width={38}>
+          <Panel title="Calidad" width={38}>
             <SelectInput
               indicatorComponent={ChoiceIndicator}
               itemComponent={ChoiceItem}
