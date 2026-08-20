@@ -331,6 +331,10 @@ export function buildChoices(info: VideoInfo): DownloadChoice[] {
         'vcodec:avc',
         '--merge-output-format',
         'mp4',
+        // Facebook serves VP9 in MP4 which breaks playback — a Firefox UA
+        // makes it serve H.264 instead (yt-dlp issue #11326). Safe for all sites.
+        '--user-agent',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0',
       ],
     })
   }
@@ -339,7 +343,16 @@ export function buildChoices(info: VideoInfo): DownloadChoice[] {
     choices.push({
       kind: 'video',
       label: 'mejor disponible · mp4',
-      args: ['-f', 'bv*+ba/b', '-S', 'vcodec:avc', '--merge-output-format', 'mp4'],
+      args: [
+        '-f',
+        'bv*+ba/b',
+        '-S',
+        'vcodec:avc',
+        '--merge-output-format',
+        'mp4',
+        '--user-agent',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0',
+      ],
     })
   }
 
