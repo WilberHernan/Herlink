@@ -1,7 +1,7 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react'
 import os from 'node:os'
 import path from 'node:path'
-import {Box, Text, useApp, useInput, useStdout} from 'ink'
+import {Box, Text, useApp, useInput, useWindowSize} from 'ink'
 import SelectInput, {type ItemProps} from 'ink-select-input'
 import Spinner from 'ink-spinner'
 import {FullScreen} from './components/fullscreen.js'
@@ -328,7 +328,7 @@ function AppContent({
 }) {
   const theme = useTheme()
   const {exit} = useApp()
-  const {stdout} = useStdout()
+  const {columns: termCols} = useWindowSize()
   const [screen, setScreen] = useState<Screen>(initialUrls?.length ? 'downloads' : 'input')
   // one row per link, keyed by itemId in insertion order (D5)
   const [items, setItems] = useState<Map<string, ItemState>>(new Map())
@@ -366,9 +366,14 @@ function AppContent({
   const highlightRef = useRef(0) // choice under the cursor, for the ↵ hint click
   const submittedRef = useRef<string[]>([])
 
-  const columns = stdout?.columns && stdout.columns > 0 ? stdout.columns : 80
+  const columns = termCols > 0 ? termCols : 80
   const boxWidth = Math.max(14, Math.min(64, columns - 6))
   const contentWidth = Math.max(10, Math.min(columns - 4, 78))
+  // picker: panel takes ~45% of content width, clamped for readability
+  const pickerPanelWidth = Math.max(28, Math.min(44, Math.round(contentWidth * 0.45)))
+  // download rows: progress bar and title truncation scale with width
+  const progressBarWidth = Math.max(10, Math.min(20, Math.round(columns * 0.18)))
+  const downloadTitleMax = Math.max(16, boxWidth - progressBarWidth - 6)
 
   // binary + ffmpeg init happens once per process, cached across runs
   const getInit = useCallback((): CachedInit<InitContext> => {
@@ -758,6 +763,13 @@ function AppContent({
 
   return (
     <FullScreen>
+      {columns < 40 ? (
+        <Box flexDirection="column" alignItems="center">
+          <Text color={theme.warning}>⚠ terminal demasiado angosta ({columns} columnas)</Text>
+          <Text color={theme.muted}>herlink necesita al menos 40 columnas — ampliá la ventana</Text>
+        </Box>
+      ) : (
+      <>
       <Logo />
       <Gap />
       <Box flexDirection="column" alignItems="center">
@@ -809,7 +821,7 @@ function AppContent({
               {pickerInfo.uploader ? ` · ${pickerInfo.uploader}` : ''}
             </Text>
           </Box>
-          <Panel title="Calidad" width={38}>
+          <Panel title="Calidad" width={pickerPanelWidth}>
             <SelectInput
               indicatorComponent={ChoiceIndicator}
               itemComponent={ChoiceItem}
@@ -853,10 +865,10 @@ function AppContent({
                   {item.status === 'downloading' && item.title ? (
                     /* downloading: title + bar on the SAME line */
                     <Box justifyContent="space-between">
-                      <Text color={theme.muted}>{truncate(item.title.replace(/_/g, ' '), 40)}</Text>
+                      <Text color={theme.muted}>{truncate(item.title.replace(/_/g, ' '), downloadTitleMax)}</Text>
                       <Text>
                         {item.progress?.totalBytes ? (
-                          <ProgressBar percent={item.progress.downloadedBytes / item.progress.totalBytes} width={14} />
+                          <ProgressBar percent={item.progress.downloadedBytes / item.progress.totalBytes} width={progressBarWidth} />
                         ) : item.progress ? (
                           <Text color={theme.muted}>{indeterminateMeta(item.progress)}</Text>
                         ) : (
@@ -867,7 +879,7 @@ function AppContent({
                   ) : (
                     /* other states: title/url + status label */
                     <Box justifyContent="space-between">
-                      <Text color={theme.muted}>{truncate(item.url, 40)}</Text>
+                      <Text color={theme.muted}>{truncate(item.url, downloadTitleMax)}</Text>
                       <Text bold color={rowColor(item.status)}>
                         {STATUS_LABEL[item.status]}
                       </Text>
@@ -918,6 +930,8 @@ function AppContent({
           <Shortcuts items={hints} />
         </>
       ) : null}
+      </>
+      )}
     </FullScreen>
   )
 }

@@ -1,5 +1,5 @@
 import React, {useEffect, useRef, useState} from 'react'
-import {Box, Text, useStdout} from 'ink'
+import {Box, Text, useWindowSize} from 'ink'
 import {type Theme, useTheme} from '../theme.js'
 
 // The Gentle AI braille rose — copied pixel-identical from
@@ -93,9 +93,7 @@ function renderName(phase: Phase, frame: number, plan: LetterPlan[], spinChars: 
 
 export function Logo() {
   const theme = useTheme()
-  const {stdout} = useStdout()
-  const rows = stdout?.rows && stdout.rows > 1 ? stdout.rows : 24
-  const cols = stdout?.columns && stdout.columns > 0 ? stdout.columns : 80
+  const {columns: cols, rows} = useWindowSize()
   // like the plugin: below the full rose needs, fall back to a single line
   const compact = rows < ROSE_ROWS + 8 || cols < 64
   const animated = Boolean(process.stdout.isTTY)
