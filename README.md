@@ -239,6 +239,23 @@ Distributed under the MIT License. See `LICENSE.txt` for more information.
 
 ---
 
+## Screenshots
+
+<!-- Add screenshots of Herlink UI here with rounded borders -->
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/WilberHernan/Herlink/main/Screenshot_20260816_164457_Termux.jpg" alt="Herlink download screen" style="border-radius: 4px; border: 1px solid #e0e0e0; padding: 4px;">
+</p>
+
+<p align="center">
+  <img src="PLACEHOLDER_2.png" alt="Herlink format picker" style="border-radius: 4px; border: 1px solid #e0e0e0; padding: 4px;">
+</p>
+
+<p align="center">
+  <sub>Replace the placeholder URLs above with the actual paths to your screenshots.<br>
+  Recommended: store images in the repo and use relative paths, or host on GitHub raw.</sub>
+</p>
+
 ## Badges
 
 <!-- Shields.io badges - update shields.io URLs with your project's actual metrics -->
