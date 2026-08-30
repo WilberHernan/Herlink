@@ -12,7 +12,7 @@ test('parses a url and a spaced theme option without confusing the value for the
     version: false,
     urls: ['https://example.com/video'],
     themeMode: 'light',
-    embedMetadata: false,
+    embedMetadata: true,
     resume: false,
     noUpdate: false,
   })
@@ -24,7 +24,7 @@ test('parses an equals-style theme option after the url', async () => {
     version: false,
     urls: ['https://example.com/video'],
     themeMode: 'dark',
-    embedMetadata: false,
+    embedMetadata: true,
     resume: false,
     noUpdate: false,
   })
@@ -35,7 +35,7 @@ test('collects multiple positional urls in order', async () => {
     help: false,
     version: false,
     urls: ['https://a.example/v', 'https://b.example/v', 'https://c.example/v'],
-    embedMetadata: false,
+    embedMetadata: true,
     resume: false,
     noUpdate: false,
   })
@@ -191,7 +191,8 @@ test('--no-embed-metadata wins over --embed-metadata in either order', async () 
   assert.equal((await parseArgs(['--embed-metadata', '--no-embed-metadata', 'https://example.com/v'])).embedMetadata, false)
   assert.equal((await parseArgs(['--no-embed-metadata', '--embed-metadata', 'https://example.com/v'])).embedMetadata, false)
   assert.equal((await parseArgs(['--embed-metadata', 'https://example.com/v'])).embedMetadata, true)
-  assert.equal((await parseArgs(['https://example.com/v'])).embedMetadata, false)
+  // default on since the embed change; --no-embed-metadata is the escape
+  assert.equal((await parseArgs(['https://example.com/v'])).embedMetadata, true)
 })
 
 test('--continue sets resume and --no-update sets noUpdate', async () => {

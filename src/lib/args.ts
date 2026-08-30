@@ -24,7 +24,7 @@ export async function parseArgs(args: string[]): Promise<CliArgs> {
     help: false,
     version: false,
     urls: [],
-    embedMetadata: false,
+    embedMetadata: true, // default on: embed metadata + cover art; --no-embed-metadata escapes
     resume: false,
     noUpdate: false,
   }
