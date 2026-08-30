@@ -316,7 +316,7 @@ test('buildDownloadArgs() on desktop is unchanged (no --restrict-filenames)', ()
       'after_move:filepath',
       '--no-simulate',
       '-o',
-      path.join(os.homedir(), 'Downloads', '%(title).60s.%(ext)s'),
+      path.join(os.homedir(), 'Downloads', '%(title).60s [%(height)sp].%(ext)s'),
     ])
   } finally {
     restoreTermux()
@@ -357,7 +357,7 @@ test('buildDownloadArgs() adds --continue after the choice args when resume is s
       'after_move:filepath',
       '--no-simulate',
       '-o',
-      path.join(os.homedir(), 'Downloads', '%(title).60s.%(ext)s'),
+      path.join(os.homedir(), 'Downloads', '%(title).60s [%(height)sp].%(ext)s'),
     ])
   } finally {
     restoreTermux()
@@ -399,7 +399,7 @@ test('buildDownloadArgs() inserts --cookies right after the url when cookies are
       'after_move:filepath',
       '--no-simulate',
       '-o',
-      path.join(os.homedir(), 'Downloads', '%(title).60s.%(ext)s'),
+      path.join(os.homedir(), 'Downloads', '%(title).60s [%(height)sp].%(ext)s'),
     ])
   } finally {
     restoreTermux()
@@ -523,7 +523,7 @@ const DESKTOP_TAIL = [
   'after_move:filepath',
   '--no-simulate',
   '-o',
-  path.join(os.homedir(), 'Downloads', '%(title).60s.%(ext)s'),
+  path.join(os.homedir(), 'Downloads', '%(title).60s [%(height)sp].%(ext)s'),
 ]
 
 test('buildDownloadArgs() embeds metadata + thumbnail with ffmpeg and passes --ffmpeg-location (REQ-009)', () => {
@@ -684,6 +684,31 @@ test('buildDownloadArgs() adds no subs flags for an audio-only choice (REQ-014)'
     assert.equal(writeMock.mock.callCount(), 0, 'audio-only must not warn either')
   } finally {
     writeMock.mock.restore()
+    restoreTermux()
+  }
+})
+
+test('buildDownloadArgs() tags resolution in video filenames but not audio (multi-res)', () => {
+  const restoreTermux = termuxEnv(false)
+  try {
+    const video = buildDownloadArgs({
+      url: 'https://example.com/v',
+      choice,
+      outDir: path.join(os.homedir(), 'Downloads'),
+      ffmpeg: {available: false},
+    })
+    const outTemplateIdx = video.indexOf('-o')
+    assert.match(video[outTemplateIdx + 1]!, /\[%\(height\)sp\]\.%\(ext\)s$/, 'video filename must carry [1080p]-style resolution')
+
+    const audio = buildDownloadArgs({
+      url: 'https://example.com/v',
+      choice: AUDIO_CHOICE,
+      outDir: path.join(os.homedir(), 'Downloads'),
+      ffmpeg: {available: false},
+    })
+    const audioTemplate = audio[audio.indexOf('-o') + 1]!
+    assert.equal(audioTemplate, path.join(os.homedir(), 'Downloads', '%(title).60s.%(ext)s'), 'audio keeps a plain title (no resolution)')
+  } finally {
     restoreTermux()
   }
 })

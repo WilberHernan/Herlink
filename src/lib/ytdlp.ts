@@ -503,7 +503,14 @@ export function buildDownloadArgs(opts: DownloadArgs): string[] {
     'after_move:filepath',
     '--no-simulate',
     '-o',
-    path.join(opts.outDir, '%(title).60s.%(ext)s'),
+    // video kinds tag the resolution in the filename ([1080p]) so the same
+    // video can be downloaded at multiple resolutions without yt-dlp treating
+    // the existing file as a collision and refusing to proceed; audio (mp3) is
+    // a single option so it keeps the plain title (no resolution makes sense)
+    path.join(
+      opts.outDir,
+      opts.choice.kind === 'audio' ? '%(title).60s.%(ext)s' : '%(title).60s [%(height)sp].%(ext)s',
+    ),
   ]
   // warn-skip instead of failing: embed flags requested but ffmpeg absent
   if (opts.embedMetadata && !opts.ffmpeg.available) warnFfmpegMissing()
