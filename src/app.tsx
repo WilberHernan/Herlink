@@ -742,33 +742,16 @@ function AppContent({
   }
 
   const rowDetail = (item: ItemState) => {
-    if (item.status === 'processing') {
+    // the status word already renders in STATUS_LABEL on the main line, so
+    // these detail rows show only the loader — avoids "procesando… ⠴ procesando…"
+    if (
+      item.status === 'processing' ||
+      item.status === 'refreshing' ||
+      item.status === 'audio-fallback'
+    ) {
       return (
-        <Text>
-          <Text color={theme.accent}>
-            <Spinner type="dots" />
-          </Text>
-          <Text color={theme.muted}> procesando…</Text>
-        </Text>
-      )
-    }
-    if (item.status === 'refreshing') {
-      return (
-        <Text>
-          <Text color={theme.accent}>
-            <Spinner type="dots" />
-          </Text>
-          <Text color={theme.muted}> Reintentando — obteniendo datos nuevos…</Text>
-        </Text>
-      )
-    }
-    if (item.status === 'audio-fallback') {
-      return (
-        <Text>
-          <Text color={theme.accent}>
-            <Spinner type="dots" />
-          </Text>
-          <Text color={theme.muted}> video bloqueado — bajando solo audio…</Text>
+        <Text color={theme.accent}>
+          <Spinner type="dots" />
         </Text>
       )
     }
