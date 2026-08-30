@@ -304,7 +304,7 @@ function estimateSize(f: RawFormat, duration?: number): number {
   return 0
 }
 
-export function buildChoices(info: VideoInfo): DownloadChoice[] {
+export function buildChoices(info: VideoInfo, ffmpeg?: FfmpegStatus): DownloadChoice[] {
   const formats = info.formats ?? []
   const choices: DownloadChoice[] = []
 
@@ -321,16 +321,33 @@ export function buildChoices(info: VideoInfo): DownloadChoice[] {
     const muxed = best.acodec && best.acodec !== 'none'
     const size = estimateSize(best, info.duration) + (muxed ? 0 : audioSize)
     const sizeLabel = size > 0 ? ` · ~${formatBytes(size)}` : ''
+    // BUG-1: MP4 only supports H.264/AV1 video. VP9/AV1-in-WebM cannot be
+    // merged into MP4 (`[mov] vp9 only supported in MP4` — yt-dlp #10500).
+    // On YouTube there is NO H.264 above 1080p (#8880), so a 1440p/2160p
+    // "· mp4" label always resolves to VP9 and the merge fails. Detect the
+    // best candidate's video codec: if it is not MP4-compatible, offer the
+    // height as MKV instead so the merge actually succeeds.
+    const vcodec = best.vcodec ?? ''
+    const mp4Compatible = /avc1?\b|h264|av01/i.test(vcodec)
+    const mergeFormat = mp4Compatible ? 'mp4' : 'mkv'
+    const extLabel = mergeFormat === 'mp4' ? 'mp4' : 'mkv'
+    // BUG-3: bv*+ba requires ffmpeg to merge; without ffmpeg the download would
+    // fail at runtime. yt-dlp itself falls back to -f best (a pre-muxed file)
+    // when ffmpeg is unavailable, so mirror that here: use a pre-muxed leg.
+    const hasFfmpeg = ffmpeg?.available !== false
+    const formatSpec = hasFfmpeg
+      ? `bv*[height=${height}]+ba/b[height=${height}]/bv*[height<=${height}]+ba/b`
+      : `b[height=${height}]/b[height<=${height}]/b`
     choices.push({
       kind: 'video',
-      label: `${height}p · mp4${sizeLabel}`,
+      label: `${height}p · ${extLabel}${sizeLabel}`,
       args: [
         '-f',
-        `bv*[height=${height}]+ba/b[height=${height}]/bv*[height<=${height}]+ba/b`,
+        formatSpec,
         '-S',
         'vcodec:avc',
         '--merge-output-format',
-        'mp4',
+        mergeFormat,
         // Facebook serves VP9 in MP4 which breaks playback — a Firefox UA
         // makes it serve H.264 instead (yt-dlp issue #11326). Safe for all sites.
         '--user-agent',
@@ -345,7 +362,8 @@ export function buildChoices(info: VideoInfo): DownloadChoice[] {
       label: 'mejor disponible · mp4',
       args: [
         '-f',
-        'bv*+ba/b',
+        // BUG-3: without ffmpeg use a pre-muxed file (b) — bv*+ba needs a merge
+        ffmpeg?.available === false ? 'b/best' : 'bv*+ba/b',
         '-S',
         'vcodec:avc',
         '--merge-output-format',
@@ -355,12 +373,14 @@ export function buildChoices(info: VideoInfo): DownloadChoice[] {
       ],
     })
   }
-
   const audioSizeLabel = audioSize ? ` · ~${formatBytes(audioSize)}` : ''
+  // BUG-3: mp3 transcoding (-x --audio-format mp3) requires ffmpeg. Without it
+  // offer the best native audio stream instead (ba/b) so the choice still works.
+  const hasFfmpeg2 = ffmpeg?.available !== false
   choices.push({
     kind: 'audio',
-    label: `solo audio · mp3${audioSizeLabel}`,
-    args: ['-f', 'ba/b', '-x', '--audio-format', 'mp3', '--audio-quality', '0'],
+    label: hasFfmpeg2 ? `solo audio · mp3${audioSizeLabel}` : `solo audio${audioSizeLabel}`,
+    args: hasFfmpeg2 ? ['-f', 'ba/b', '-x', '--audio-format', 'mp3', '--audio-quality', '0'] : ['-f', 'ba/b'],
   })
 
   return choices
@@ -427,8 +447,7 @@ export type DownloadArgs = {
   outDir: string
   ffmpeg: FfmpegStatus
   /** --continue: resume a partial download instead of restarting (REQ-005). */
-  resume?: boolean
-  /** Netscape cookies file, passed to yt-dlp for auth (REQ-007). */
+  resume?: boolean  /** Netscape cookies file, passed to yt-dlp for auth (REQ-007). */
   cookies?: string
   /** --embed-metadata --embed-thumbnail, ffmpeg-gated (REQ-009/011); resolved off-switch wins at parse (D3). */
   embedMetadata?: boolean
@@ -567,9 +586,14 @@ export function download(
               }, 100 - (now - lastProgressTime))
             }
           }
-        } else if (line.includes('Downloading 1 format(s):')) {
-          // "[info] xxx: Downloading 1 format(s): 395+251" — each id is one file
-          totalParts = (line.split('format(s):')[1] ?? '').trim().split('+').length
+        } else if (line.includes('Downloading ') && line.includes(' format(s):')) {
+          // BUG-4: yt-dlp prints "[info] xxx: Downloading 2 format(s): 137+251"
+          // for a video+audio merge — the old hardcoded 'Downloading 1 format(s):'
+          // never matched "2+", so totalParts stayed 1 and the UI showed
+          // "parte n/1" during merges. Count the ids ("137+251" → 2).
+          const ids = (line.split('format(s):')[1] ?? '').trim()
+          const count = ids.split('+').filter(Boolean).length
+          if (count > 0) totalParts = count
         } else if (line.includes('[Merger]') || line.includes('[ExtractAudio]')) {
           const merging = /^\[Merger\] Merging formats into "(.+)"$/.exec(line)?.[1]
           const extracting = /^\[ExtractAudio\] Destination: (.+)$/.exec(line)?.[1]

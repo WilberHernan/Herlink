@@ -346,6 +346,9 @@ function AppContent({
 
   const queueRef = useRef<ReturnType<typeof createParallelQueue> | undefined>(undefined)
   const initRef = useRef<CachedInit<InitContext> | undefined>(undefined)
+  // resolved once init completes — the picker reads it to know if ffmpeg is
+  // present (decides whether to offer mp3/merge options; BUG-3)
+  const ffmpegRef = useRef<FfmpegStatus | undefined>(undefined)
   // resolves each open picker's choiceFor promise once the user answers; esc
   // resolves with 'cancel' so only that item skips (REQ-par-009)
   const pickersRef = useRef(new Map<string, (choice: DownloadChoice | 'playlist' | 'cancel') => void>())
@@ -420,6 +423,7 @@ function AppContent({
         const merged = pendingJoinRef.current.length > 0 ? [...urls, ...pendingJoinRef.current] : urls
         pendingJoinRef.current = []
         submittedRef.current.push(...merged)
+        ffmpegRef.current = init.ffmpeg
         const queue = createParallelQueue({
           ytdlp: init.ytdlp,
           outDir,
@@ -609,7 +613,7 @@ function AppContent({
   const pickerInfo = pickerItemId ? pickInfosRef.current.get(pickerItemId) : undefined
   const pickerUrl = pickerItemId ? items.get(pickerItemId)?.url : undefined
   const pickerPlatform = pickerUrl ? detectPlatform(pickerUrl) : undefined
-  const pickerChoices = pickerInfo ? buildChoices(pickerInfo) : []
+  const pickerChoices = pickerInfo ? buildChoices(pickerInfo, ffmpegRef.current) : []
   const pickerPlaylist = pickerInfo ? playlistOption(pickerInfo) : undefined
 
   const handlePick = (item: {value: number}) => {

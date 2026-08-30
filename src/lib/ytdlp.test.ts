@@ -208,6 +208,51 @@ test('bestChoice() returns the top video and audioChoice() the mp3 option', () =
   assert.ok(audio.args.includes('mp3'))
 })
 
+test('buildChoices() labels VP9-only heights as mkv not mp4 (BUG-1: no H.264 above 1080p on YouTube)', () => {
+  // A 2160p format that is VP9-only cannot be merged into MP4 (`[mov] vp9 only
+  // supported in MP4` — yt-dlp #10500). It must surface as mkv so the download
+  // actually succeeds instead of failing at the merge step.
+  const info: VideoInfo = {
+    title: 'vp9-2160',
+    formats: [
+      {format_id: '10', vcodec: 'vp09', vcodec_name: 'vp9', acodec: 'none', height: 2160, ext: 'webm'},
+      {format_id: '11', vcodec: 'avc1', acodec: 'none', height: 1080, ext: 'mp4'},
+      {format_id: '12', acodec: 'mp4a', vcodec: 'none', abr: 128, ext: 'm4a'},
+    ],
+  }
+  const choices = buildChoices(info)
+  const vp9 = choices.find(c => c.kind === 'video' && c.label.includes('2160'))
+  assert.ok(vp9, '2160p choice must exist')
+  assert.ok(vp9.label.includes('mkv'), `2160p label must say mkv, got: ${vp9.label}`)
+  assert.ok(vp9.args.includes('--merge-output-format') && vp9.args.includes('mkv'), 'VP9 choice must merge to mkv')
+  const h264 = choices.find(c => c.kind === 'video' && c.label.includes('1080'))
+  assert.ok(h264.label.includes('mp4'), '1080p H.264 choice must stay mp4')
+  assert.ok(h264.args.includes('mp4'), 'H.264 choice must merge to mp4')
+})
+
+test('buildChoices() without ffmpeg offers pre-muxed video and native audio (BUG-3)', () => {
+  const info: VideoInfo = {
+    title: 'no-ffmpeg',
+    formats: [
+      {format_id: '1', vcodec: 'avc1', acodec: 'mp4a', height: 720, ext: 'mp4'},
+      {format_id: '3', acodec: 'mp4a', vcodec: 'none', abr: 128, ext: 'm4a'},
+    ],
+  }
+  const choices = buildChoices(info, {available: false, reason: 'missing'})
+  const video = choices.find(c => c.kind === 'video')!
+  // without ffmpeg the video must use a pre-muxed leg (b), not bv*+ba (merge)
+  const fIdx = video.args.indexOf('-f')
+  assert.ok(video.args[fIdx + 1]!.includes('/b'), `video must avoid merge without ffmpeg: ${video.args[fIdx + 1]}`)
+  assert.ok(!video.args[fIdx + 1]!.includes('+'), `video must not request a merge without ffmpeg: ${video.args[fIdx + 1]}`)
+  const audio = choices.find(c => c.kind === 'audio')!
+  assert.ok(!audio.args.includes('-x'), 'no ffmpeg means no mp3 transcode (-x)')
+  assert.ok(!audio.label.includes('mp3'), 'audio label must not claim mp3 without ffmpeg')
+  // with ffmpeg the normal merge/mp3 behavior is preserved
+  const withFmpeg = buildChoices(info, {available: true})
+  const audioWith = withFmpeg.find(c => c.kind === 'audio')!
+  assert.ok(audioWith.args.includes('-x') && audioWith.label.includes('mp3'), 'ffmpeg present keeps mp3')
+})
+
 test('buildDownloadArgs() adds --restrict-filenames on Termux shared storage', () => {
   const restoreTermux = termuxEnv(true)
   try {
