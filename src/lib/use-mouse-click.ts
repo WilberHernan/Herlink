@@ -13,7 +13,11 @@ const SGR_PRESS = /\u001B\[<(\d+);(\d+);(\d+)M/g
  */
 export function useMouseClick(onClick: (x: number, y: number) => void, isActive: boolean) {
   const handlerRef = useRef(onClick)
-  handlerRef.current = onClick
+  // sync the latest handler after render, not during — writing ref.current in
+  // render is a React rules violation (can read stale/clobbered in a replay)
+  useEffect(() => {
+    handlerRef.current = onClick
+  })
   const {stdin} = useStdin()
   const {stdout} = useStdout()
 

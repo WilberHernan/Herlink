@@ -274,7 +274,9 @@ const HINTS: Record<Screen, Array<[string, string]>> = {
 }
 
 // everything the first submit needs before a queue can exist (D9)
-type InitContext = {ytdlp: string; ffmpeg: FfmpegStatus; noUpdate: boolean}
+// outDir is resolved here too (Termux shared-storage is async) so the queue
+// is created with the FINAL destination, not a stale ~/Downloads (race fix)
+type InitContext = {ytdlp: string; ffmpeg: FfmpegStatus; noUpdate: boolean; outDir: string}
 type CachedInit<T> = ReturnType<typeof createCachedInit<T>>
 
 type AppProps = {
@@ -392,12 +394,24 @@ function AppContent({
           await maybeSelfUpdate(ytdlp, setInitStatus)
         }
         const ffmpeg = await findFfmpeg()
+        // resolve the Termux download dir INSIDE init, before the queue exists:
+        // the old async effect raced queue creation, leaving the queue bound to
+        // stale ~/Downloads even after shared-storage resolved (initialSubmittedRef
+        // blocked the effect re-run). Freeze the real destination here.
+        let outDir_ = outDir
+        if (isTermux() && !outDirOverride) {
+          const {dir, hint} = await resolveOutDir()
+          outDir_ = dir
+          if (hint) process.stderr.write(hint + '\n')
+        }
+        ffmpegRef.current = ffmpeg
+        setOutDir(outDir_)
         setInitStatus(undefined)
-        return {ytdlp, ffmpeg, noUpdate: noUpdate_}
+        return {ytdlp, ffmpeg, noUpdate: noUpdate_, outDir: outDir_}
       })
     }
     return initRef.current
-  }, [noUpdate])
+  }, [noUpdate, outDir, outDirOverride])
 
   // appends links to the live queue, or creates the queue on the first submit;
   // resolves true when the queue accepted the urls (false on init failure)
@@ -426,7 +440,7 @@ function AppContent({
         ffmpegRef.current = init.ffmpeg
         const queue = createParallelQueue({
           ytdlp: init.ytdlp,
-          outDir,
+          outDir: init.outDir,
           ffmpeg: init.ffmpeg,
           resume,
           cookies,
@@ -437,12 +451,16 @@ function AppContent({
             // the 'picking' event precedes the choiceFor callback; stash the
             // itemId so choiceFor knows which row its picker belongs to
             if (status === 'picking') pickForRef.current = itemId
+            // pop the url OUTSIDE the updater: shift() mutates the ref, so it
+            // must live in the event handler (which may be impure), not inside
+            // the setState updater (which must be pure — React may replay it,
+            // e.g. StrictMode, pairing each row with the wrong url otherwise)
+            const url = pendingUrlsRef.current.shift()
             setItems(prev => {
               const row = prev.get(itemId)
               if (!row) {
                 // start() emits the row-creating events synchronously, before
                 // the app knows itemId — pair each with its url (FIFO)
-                const url = pendingUrlsRef.current.shift()
                 if (url === undefined) return prev
                 return new Map(prev).set(itemId, {status, url})
               }
@@ -510,14 +528,6 @@ function AppContent({
     initialSubmittedRef.current = true
     void startItems(initialUrls)
   }, [initialUrls, startItems])
-
-  useEffect(() => {
-    if (!isTermux() || outDirOverride) return
-    void resolveOutDir().then(({dir, hint}) => {
-      setOutDir(dir)
-      if (hint) process.stderr.write(hint + '\n')
-    })
-  }, [outDirOverride])
 
   // early exit mid-run still reports the partial outcome (REQ-par-019); a
   // finished run already reported via onAllDone, so queueRef is undefined here
