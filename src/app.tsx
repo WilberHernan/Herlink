@@ -741,23 +741,6 @@ function AppContent({
     }
   }
 
-  const rowDetail = (item: ItemState) => {
-    // the status word already renders in STATUS_LABEL on the main line, so
-    // these detail rows show only the loader — avoids "procesando… ⠴ procesando…"
-    if (
-      item.status === 'processing' ||
-      item.status === 'refreshing' ||
-      item.status === 'audio-fallback'
-    ) {
-      return (
-        <Text color={theme.accent}>
-          <Spinner type="dots" />
-        </Text>
-      )
-    }
-    return null
-  }
-
   return (
     <FullScreen>
       {columns < 40 ? (
@@ -874,16 +857,21 @@ function AppContent({
                       </Text>
                     </Box>
                   ) : (
-                    /* other states: title/url + status label */
+                    /* other states: title/url + status. Active states show the
+                       loader instead of a word; quiet/terminal states keep the label */
                     <Box justifyContent="space-between">
                       <Text color={theme.muted}>{truncate(item.url, downloadTitleMax)}</Text>
-                      <Text bold color={rowColor(item.status)}>
-                        {STATUS_LABEL[item.status]}
-                      </Text>
+                      {PROGRESS_STATUSES.includes(item.status) ? (
+                        <Text bold color={rowColor(item.status)}>
+                          <Spinner type="dots" />
+                        </Text>
+                      ) : (
+                        <Text bold color={rowColor(item.status)}>
+                          {STATUS_LABEL[item.status]}
+                        </Text>
+                      )}
                     </Box>
                   )}
-                  {/* detail line only for non-downloading states (processing, etc.) */}
-                  {item.status !== 'downloading' && rowDetail(item)}
                 </Box>
               ))}
               {queuedCount > 0 && (
