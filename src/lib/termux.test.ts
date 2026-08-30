@@ -67,12 +67,12 @@ test('isTermux() is false with neither env var set', () => {
   }
 })
 
-test('resolveOutDir() prefers ~/storage/dcim/Camera and creates it', async () => {
+test('resolveOutDir() prefers ~/storage/download/Downlink and creates it', async () => {
   const restore = termuxEnv(true)
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'herlink-termux-'))
   try {
     fs.mkdirSync(path.join(base, 'storage'), {recursive: true})
-    const expected = path.join(base, 'storage', 'dcim', 'Camera')
+    const expected = path.join(base, 'storage', 'download', 'Downlink')
     const result = await resolveOutDir(base)
     assert.deepEqual(result, {dir: expected})
     assert.equal(fs.existsSync(expected), true, 'camera dir must be created')
@@ -111,7 +111,7 @@ test('isSharedStorageDir() only accepts ~/storage and its descendants', () => {
   const storage = path.join(HOME, 'storage')
   assert.equal(isSharedStorageDir(storage), true)
   assert.equal(isSharedStorageDir(path.join(storage, 'downloads')), true)
-  assert.equal(isSharedStorageDir(path.join(storage, 'dcim', 'Camera')), true)
+  assert.equal(isSharedStorageDir(path.join(storage, 'download', 'Downlink')), true)
   assert.equal(isSharedStorageDir(path.join(HOME, 'Downloads')), false)
   assert.equal(isSharedStorageDir(`${storage}-other`), false)
 })
