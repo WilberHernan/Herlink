@@ -2,12 +2,13 @@ import React, {useCallback, useEffect, useRef, useState} from 'react'
 import os from 'node:os'
 import path from 'node:path'
 import {Box, Text, useApp, useInput, useWindowSize} from 'ink'
-import SelectInput, {type ItemProps} from 'ink-select-input'
+import {type ItemProps} from 'ink-select-input'
 import Spinner from 'ink-spinner'
 import {FullScreen} from './components/fullscreen.js'
 import {Logo, ROSE_ROWS} from './components/logo.js'
 import {Panel} from './components/panel.js'
 import {ProgressBar} from './components/progress-bar.js'
+import {ScrollableList} from './components/scrollable-list.js'
 import {Shortcuts} from './components/shortcuts.js'
 import {TextInput} from './components/text-input.js'
 import {UnderlineInput, underlineButtonWidth} from './components/underline-input.js'
@@ -16,7 +17,7 @@ import {formatBytes, formatDuration, formatSpeed, shortenPath, truncate, wrapTex
 import {addToHistory, loadHistory} from './lib/history.js'
 import {detectPlatform, isProbablyUrl, type Platform} from './lib/platforms.js'
 import {isTermux, resolveOutDir} from './lib/termux.js'
-import {useMouseClick} from './lib/use-mouse-click.js'
+import {useMouseClick, type MouseEventKind} from './lib/use-mouse-click.js'
 import {nextThemeMode, ThemeProvider, type ThemeMode, useTheme} from './theme.js'
 import {createParallelQueue, type DoneInfo, type ItemStateStatus, type Outcome} from './lib/queue.js'
 export type {Outcome} from './lib/queue.js'
@@ -219,6 +220,22 @@ export function screenAfterPickerClose(remainingPickers: number, current: Screen
 }
 
 /**
+ * Wheel event → picker cursor step: wheel-up scrolls TOWARD the first choice
+ * (index 0, i.e. −1), wheel-down toward the higher choices (+1). Clicks move
+ * nothing — their path is the existing text hit-testing (clickTargetAt).
+ */
+export function pickerWheelStep(kind: MouseEventKind): -1 | 0 | 1 {
+  switch (kind) {
+    case 'wheel-up':
+      return -1
+    case 'wheel-down':
+      return 1
+    default:
+      return 0
+  }
+}
+
+/**
  * Splits one submit value into the plausible URLs it carries — a single paste
  * may bring several links separated by whitespace (REQ-par-001).
  */
@@ -342,6 +359,9 @@ function AppContent({
   const [history, setHistory] = useState(loadHistory)
   // oldest open picker (FIFO); undefined when no item is waiting (REQ-par-005)
   const [pickerItemId, setPickerItemId] = useState<string>()
+  // controlled picker cursor — drives the ScrollableList viewport from the
+  // wheel and the keys; highlightRef mirrors it for the click/↵-hint paths
+  const [pickerActiveIndex, setPickerActiveIndex] = useState(0)
   const [warning, setWarning] = useState<string>()
   // init progress line on the downloads screen while the first queue spins up
   const [initStatus, setInitStatus] = useState<string>()
@@ -540,6 +560,7 @@ function AppContent({
   // each picker starts at the first option
   useEffect(() => {
     highlightRef.current = 0
+    setPickerActiveIndex(0)
   }, [pickerItemId])
 
   const resetToInput = useCallback(() => {
@@ -551,6 +572,7 @@ function AppContent({
     setPickerItemId(undefined)
     setUrlInput('')
     highlightRef.current = 0
+    setPickerActiveIndex(0)
     submittedRef.current = []
     pickersRef.current.clear()
     pickInfosRef.current.clear()
@@ -626,6 +648,15 @@ function AppContent({
   const pickerChoices = pickerInfo ? buildChoices(pickerInfo, ffmpegRef.current) : []
   const pickerPlaylist = pickerInfo ? playlistOption(pickerInfo) : undefined
 
+  // keep the click/↵-hint cursor (highlightRef) aligned with the controlled
+  // index — the wheel and the keys both move the state, so the ref is derived
+  const updatePickerIndex = useCallback((index: number) => {
+    setPickerActiveIndex(index)
+  }, [])
+  useEffect(() => {
+    highlightRef.current = pickerActiveIndex
+  }, [pickerActiveIndex])
+
   const handlePick = (item: {value: number}) => {
     const itemId = pickerItemId
     if (!itemId) return
@@ -696,7 +727,18 @@ function AppContent({
   }
 
   useMouseClick(
-    (x, y) => {
+    event => {
+      if (event.kind !== 'click') {
+        // wheel: the picker cursor follows the scroll — Termux translates
+        // touch drags and physical wheel rotation into SGR wheel events.
+        // Only the visible picker consumes them (wheel-up → choice 0 side)
+        if (screen !== 'picker' || !pickerItemId) return
+        const total = pickerChoices.length + (pickerPlaylist ? 1 : 0)
+        if (total === 0) return
+        setPickerActiveIndex(prev => Math.max(0, Math.min(prev + pickerWheelStep(event.kind), total - 1)))
+        return
+      }
+      const {x, y} = event
       // the logo takes you home — anchored on the rose geometry because the
       // name line below it scrambles ("Herlink" is not stable text while the
       // effect runs, so findFrameRow('Herlink') can miss during a scramble)
@@ -802,7 +844,9 @@ function AppContent({
             </Text>
           </Box>
           <Panel title="Formato" width={pickerPanelWidth}>
-            <SelectInput
+            {/* the format list scrolls linearly past this many rows (wheel + j/k) —
+                ScrollableList is controlled; the wheel bumps pickerActiveIndex */}
+            <ScrollableList
               indicatorComponent={ChoiceIndicator}
               itemComponent={ChoiceItem}
               items={[
@@ -822,8 +866,10 @@ function AppContent({
                     ]
                   : []),
               ]}
+              limit={8}
+              selectedIndex={pickerActiveIndex}
+              onActiveIndexChange={updatePickerIndex}
               onSelect={handlePick}
-              onHighlight={item => (highlightRef.current = item.value)}
             />
           </Panel>
         </Box>

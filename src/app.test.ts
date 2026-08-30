@@ -5,6 +5,7 @@ import {
   createCachedInit,
   doneSummary,
   itemStateTransition,
+  pickerWheelStep,
   resolveInitialOutDir,
   restoreAfterRejectedSubmit,
   screenAfterPickerClose,
@@ -246,6 +247,17 @@ test('screenAfterPickerClose: a sibling picker stays open — screen keeps the p
 test('screenAfterPickerClose: only the picker screen is affected', () => {
   assert.equal(screenAfterPickerClose(0, 'input'), 'input')
   assert.equal(screenAfterPickerClose(0, 'done'), 'done')
+})
+
+// ── T4a: picker wheel direction (linear scroll feature) ─────────────────────
+
+test('pickerWheelStep: wheel-up moves toward choice 0 (−1), wheel-down toward the end (+1)', () => {
+  assert.equal(pickerWheelStep('wheel-up'), -1)
+  assert.equal(pickerWheelStep('wheel-down'), 1)
+})
+
+test('pickerWheelStep: a click moves nothing — clicks use the text hit-testing path', () => {
+  assert.equal(pickerWheelStep('click'), 0)
 })
 
 // ── T4a: createCachedInit (REQ-par-021, D9) ─────────────────────────────────

@@ -215,7 +215,7 @@ test('buildChoices() labels VP9-only heights as mkv not mp4 (BUG-1: no H.264 abo
   const info: VideoInfo = {
     title: 'vp9-2160',
     formats: [
-      {format_id: '10', vcodec: 'vp09', vcodec_name: 'vp9', acodec: 'none', height: 2160, ext: 'webm'},
+      {format_id: '10', vcodec: 'vp09', acodec: 'none', height: 2160, ext: 'webm'},
       {format_id: '11', vcodec: 'avc1', acodec: 'none', height: 1080, ext: 'mp4'},
       {format_id: '12', acodec: 'mp4a', vcodec: 'none', abr: 128, ext: 'm4a'},
     ],
@@ -226,8 +226,9 @@ test('buildChoices() labels VP9-only heights as mkv not mp4 (BUG-1: no H.264 abo
   assert.ok(vp9.label.includes('mkv'), `2160p label must say mkv, got: ${vp9.label}`)
   assert.ok(vp9.args.includes('--merge-output-format') && vp9.args.includes('mkv'), 'VP9 choice must merge to mkv')
   const h264 = choices.find(c => c.kind === 'video' && c.label.includes('1080'))
-  assert.ok(h264.label.includes('mp4'), '1080p H.264 choice must stay mp4')
-  assert.ok(h264.args.includes('mp4'), 'H.264 choice must merge to mp4')
+  assert.ok(h264, '1080p H.264 choice must exist')
+  assert.ok(h264!.label.includes('mp4'), '1080p H.264 choice must stay mp4')
+  assert.ok(h264!.args.includes('mp4'), 'H.264 choice must merge to mp4')
 })
 
 test('buildChoices() without ffmpeg offers pre-muxed video and native audio (BUG-3)', () => {
@@ -238,7 +239,7 @@ test('buildChoices() without ffmpeg offers pre-muxed video and native audio (BUG
       {format_id: '3', acodec: 'mp4a', vcodec: 'none', abr: 128, ext: 'm4a'},
     ],
   }
-  const choices = buildChoices(info, {available: false, reason: 'missing'})
+  const choices = buildChoices(info, {available: false})
   const video = choices.find(c => c.kind === 'video')!
   // without ffmpeg the video must use a pre-muxed leg (b), not bv*+ba (merge)
   const fIdx = video.args.indexOf('-f')
