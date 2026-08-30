@@ -7,10 +7,10 @@ const TERMUX_PREFIX = '/data/data/com.termux/files/usr'
 export const YTDLP_TERMUX_ERROR = 'yt-dlp no está instalado. Instálalo con: pkg install python-yt-dlp'
 export const FFMPEG_TERMUX_HINT = 'ffmpeg no encontrado. Instálalo con: pkg install ffmpeg'
 export const TERMUX_API_HINT = 'El portapapeles necesita la app Termux:API. Instálala con: pkg install termux-api'
-export const TERMUX_STORAGE_HINT = 'Ejecuta termux-setup-storage para habilitar el almacenamiento compartido (~/storage/Downlink)'
-// relative to ~/storage — Downlink is a dedicated shared-storage folder for
-// downloads, at the root of the storage mount (browser file manager)
-export const TERMUX_VIDEOS_DIR = 'Downlink'
+export const TERMUX_STORAGE_HINT = 'Ejecuta termux-setup-storage para habilitar el almacenamiento compartido (~/storage/documents/Downlink)'
+// relative to ~/storage — documents/Downlink is a dedicated shared-storage
+// folder for downloads, under Android's Documents mount (browser file manager)
+export const TERMUX_VIDEOS_DIR = path.join('documents', 'Downlink')
 
 // read at call time, not module load — tests flip the env between cases and a
 // cached const would freeze the first answer forever
@@ -25,9 +25,9 @@ export function isSharedStorageDir(dir: string): boolean {
 }
 
 /**
- * Download destination: ~/storage/Downlink (a dedicated shared storage folder
- * at the root of the mount) when termux-setup-storage ran (created on first
- * run), ~/Downloads otherwise. Desktop always ~/Downloads.
+ * Download destination: ~/storage/documents/Downlink (a dedicated shared
+ * storage folder under Android's Documents mount) when termux-setup-storage
+ * ran (created on first run), ~/Downloads otherwise. Desktop always ~/Downloads.
  */
 export async function resolveOutDir(baseDir = os.homedir()): Promise<{dir: string; hint?: string}> {
   if (isTermux()) {
