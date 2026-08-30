@@ -41,7 +41,7 @@ const HELP = `
     -h, --help        muestra esta ayuda
     -v, --version     muestra la versión
 
-  Las descargas se guardan en ~/Downloads (~/storage/documents/Videos Termux en Termux).
+  Las descargas se guardan en ~/Downloads (~/storage/dcim/Camera en Termux).
   Impulsado por yt-dlp — YouTube, X, Instagram, TikTok y más de 1600 sitios.
 `
 

@@ -7,10 +7,10 @@ const TERMUX_PREFIX = '/data/data/com.termux/files/usr'
 export const YTDLP_TERMUX_ERROR = 'yt-dlp no está instalado. Instálalo con: pkg install python-yt-dlp'
 export const FFMPEG_TERMUX_HINT = 'ffmpeg no encontrado. Instálalo con: pkg install ffmpeg'
 export const TERMUX_API_HINT = 'El portapapeles necesita la app Termux:API. Instálala con: pkg install termux-api'
-export const TERMUX_STORAGE_HINT = 'Ejecuta termux-setup-storage para habilitar el almacenamiento compartido (~/storage/documents/Videos Termux)'
-// relative to ~/storage — Videos Termux keeps downloads out of the photo
-// gallery's default Downloads folder and makes them easy to find
-export const TERMUX_VIDEOS_DIR = path.join('storage', 'documents', 'Videos Termux')
+export const TERMUX_STORAGE_HINT = 'Ejecuta termux-setup-storage para habilitar el almacenamiento compartido (~/storage/dcim/Camera)'
+// relative to ~/storage — DCIM/Camera is the shared Android camera folder, so
+// downloads land where the user asked (visible in the gallery/DCIM)
+export const TERMUX_VIDEOS_DIR = path.join('dcim', 'Camera')
 
 // read at call time, not module load — tests flip the env between cases and a
 // cached const would freeze the first answer forever
@@ -25,7 +25,7 @@ export function isSharedStorageDir(dir: string): boolean {
 }
 
 /**
- * Download destination: ~/storage/documents/Videos Termux when
+ * Download destination: ~/storage/dcim/Camera (the Android camera folder) when
  * termux-setup-storage ran (created on first run), ~/Downloads otherwise.
  * Desktop always ~/Downloads.
  */
@@ -38,7 +38,7 @@ export async function resolveOutDir(baseDir = os.homedir()): Promise<{dir: strin
       // shared storage not set up — fall through to ~/Downloads
       return {dir: path.join(baseDir, 'Downloads'), hint: TERMUX_STORAGE_HINT}
     }
-    const shared = path.join(storage, 'documents', 'Videos Termux')
+    const shared = path.join(storage, TERMUX_VIDEOS_DIR)
     await fs.mkdir(shared, {recursive: true})
     return {dir: shared}
   }
