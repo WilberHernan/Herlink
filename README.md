@@ -1,9 +1,6 @@
 # Herlink
 
-[![GitHub Release][release-badge]][releases-link]
-[![License][license-badge]][license-badge]
-[![GitHub Stars][stars-badge]][stars-link]
-[![GitHub Forks][forks-badge]][forks-link]
+<img src="img/Screenshot_20260816_164457_Termux.jpg" alt="Herlink download screen" style="border-radius: 4px; border: 1px solid #e0e0e0; padding: 4px; max-width: 100%; height: auto; display: block; margin: 0 auto;">
 
 **Download videos from YouTube, X/Twitter, Instagram, TikTok and 1,600+ other sites — right from your terminal.**
 
@@ -94,7 +91,7 @@ herlink <url>
 ### Pick a format (interactive picker)
 
 ```sh
-herlink https://youtu.be/dQw4w9WgXcQ
+herlink https://youtu.be/dQw44w9WgXcQ
 # Use ↑/↓ or j/k arrows, or number keys to select
 # Enter to download, esc to go back, ^c to quit
 ```
@@ -172,10 +169,7 @@ herlink --continue https://youtu.be/dQw4w9WgXcQ
 [x] Playlist and thread-with-multiple-videos support
 [x] Resume (`--continue`), cookies (`--cookies`), subtitles (`--subs`),
       metadata embedding (`--embed-metadata`)
-[x] Self-update for the bundled yt-dlp binary (`yt-dlp -U`, silent)
-
 [] Clipboard detection: launch bare and auto-suggest the url you copied
-[] `curl herlink.sh | sh` installer
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
