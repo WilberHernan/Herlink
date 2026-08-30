@@ -80,3 +80,28 @@ test('deriveScrollIndex: the scroll offset is clamped to a real range', () => {
   assert.equal(deriveScrollIndex(9, 4, 10, 100), 6)
   assert.equal(deriveScrollIndex(0, 4, 10, -5), 0)
 })
+
+test('deriveScrollIndex: a shrink leaves the selection visible (no off-screen highlight)', () => {
+  // drive the window deep into a 10-item list, then shrink the list so the
+  // clamped selection lands near the end — the offset must re-derive to a
+  // real range that keeps the highlight on screen
+  let prev = 0
+  for (let selected = 0; selected <= 9; selected++) prev = deriveScrollIndex(selected, 4, 10, prev)
+  assert.equal(prev, 6, 'before the shrink the window is 6..9')
+  // the list collapses to 4 items: itemCount <= limit → the window resets to 0,
+  // and the clamped selection (3) sits inside that single window
+  const shrunk = deriveScrollIndex(3, 4, 4, prev)
+  assert.equal(shrunk, 0, 'a list no longer than the limit never scrolls')
+  assert.ok(3 >= shrunk && 3 < shrunk + 4, 'the clamped selection stays inside the window')
+})
+
+test('deriveScrollIndex: a clamped out-of-range selection still yields a valid offset (never off the list)', () => {
+  // selectedIndex larger than the list (Enter path can only ever index the
+  // clamped `sel`), so the derivation must clamp to a real, in-range offset
+  for (let itemCount = 1; itemCount <= 8; itemCount++) {
+    for (let limit = 1; limit <= itemCount; limit++) {
+      const offset = deriveScrollIndex(itemCount - 1, limit, itemCount, 0)
+      assert.ok(offset >= 0 && offset <= Math.max(0, itemCount - limit), `offset ${offset} out of range for ${itemCount}/${limit}`)
+    }
+  }
+})

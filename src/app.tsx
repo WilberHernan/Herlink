@@ -2,13 +2,12 @@ import React, {useCallback, useEffect, useRef, useState} from 'react'
 import os from 'node:os'
 import path from 'node:path'
 import {Box, Text, useApp, useInput, useWindowSize} from 'ink'
-import {type ItemProps} from 'ink-select-input'
 import Spinner from 'ink-spinner'
 import {FullScreen} from './components/fullscreen.js'
 import {Logo, ROSE_ROWS} from './components/logo.js'
 import {Panel} from './components/panel.js'
 import {ProgressBar} from './components/progress-bar.js'
-import {ScrollableList} from './components/scrollable-list.js'
+import {ScrollableList, type ItemProps} from './components/scrollable-list.js'
 import {Shortcuts} from './components/shortcuts.js'
 import {TextInput} from './components/text-input.js'
 import {UnderlineInput, underlineButtonWidth} from './components/underline-input.js'
@@ -347,7 +346,7 @@ function AppContent({
 }) {
   const theme = useTheme()
   const {exit} = useApp()
-  const {columns: termCols} = useWindowSize()
+  const {columns: termCols, rows: termRows} = useWindowSize()
   const [screen, setScreen] = useState<Screen>(initialUrls?.length ? 'downloads' : 'input')
   // one row per link, keyed by itemId in insertion order (D5)
   const [items, setItems] = useState<Map<string, ItemState>>(new Map())
@@ -396,6 +395,11 @@ function AppContent({
   const contentWidth = Math.max(10, Math.min(columns - 4, 78))
   // picker: panel takes ~45% of content width, clamped for readability
   const pickerPanelWidth = Math.max(28, Math.min(44, Math.round(contentWidth * 0.45)))
+  // picker list cap respects the terminal height: the logo (~19 rows) + header
+  // + hints claim roughly 30 rows, so the visible list shrinks on short
+  // terminals (never more than the old hard-coded 8, never below 3), keeping
+  // the highlight on screen instead of scrolling off below the fold
+  const pickerListLimit = Math.max(3, Math.min(8, termRows - 30))
   // download rows: progress bar and title truncation scale with width
   const progressBarWidth = Math.max(10, Math.min(20, Math.round(columns * 0.18)))
   const downloadTitleMax = Math.max(16, boxWidth - progressBarWidth - 6)
@@ -660,6 +664,10 @@ function AppContent({
   const handlePick = (item: {value: number}) => {
     const itemId = pickerItemId
     if (!itemId) return
+    // belt-and-suspenders: an out-of-range index must never reach the
+    // item.value dereference below (onSelect is type-guarded in ScrollableList,
+    // but the click clue/hint path also funnels here)
+    if (!item) return
     const resolve = pickersRef.current.get(itemId)
     if (!resolve) return
     let choice: DownloadChoice | 'playlist' | 'cancel'
@@ -866,7 +874,7 @@ function AppContent({
                     ]
                   : []),
               ]}
-              limit={8}
+              limit={pickerListLimit}
               selectedIndex={pickerActiveIndex}
               onActiveIndexChange={updatePickerIndex}
               onSelect={handlePick}
