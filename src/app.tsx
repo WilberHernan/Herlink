@@ -818,7 +818,7 @@ function AppContent({
               {pickerInfo.uploader ? ` · ${pickerInfo.uploader}` : ''}
             </Text>
           </Box>
-          <Panel title="Calidad" width={pickerPanelWidth}>
+          <Panel title="Formato" width={pickerPanelWidth}>
             <SelectInput
               indicatorComponent={ChoiceIndicator}
               itemComponent={ChoiceItem}

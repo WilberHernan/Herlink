@@ -26,6 +26,7 @@ export function Panel({title, width, children}: {title: string; width: number; c
         borderTop={false}
         flexDirection="column"
         paddingX={2}
+        paddingTop={1}
       >
         {children}
       </Box>
