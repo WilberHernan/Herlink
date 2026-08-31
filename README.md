@@ -169,7 +169,12 @@ herlink --continue https://youtu.be/dQw4w9WgXcQ
 [x] Playlist and thread-with-multiple-videos support
 [x] Resume (`--continue`), cookies (`--cookies`), subtitles (`--subs`),
       metadata embedding (`--embed-metadata`)
-[] Clipboard detection: launch bare and auto-suggest the url you copied
+
+## Ideas
+
+- [ ] Clipboard detection: launch bare and auto-suggest the url you copied
+- [ ] `curl herlink.sh | sh` installer
+- [ ] Screenshot del progress bar fino en el README
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
