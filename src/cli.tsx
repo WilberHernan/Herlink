@@ -36,6 +36,7 @@ const HELP = `
     --cookies <archivo>  cookies Netscape para sitios que piden sesión
     --subs [idiomas]  baja subtítulos (--subs=es,en; vacío = todos)
     --embed-metadata  incrusta título, miniatura y metadatos (requiere ffmpeg)
+    --no-embed-metadata  no incrustar metadata ni carátula (activo por defecto)
     --no-update       no auto-actualizar yt-dlp en esta ejecución
     --file <archivo>  lee urls desde un archivo (una por línea)
     -h, --help        muestra esta ayuda
