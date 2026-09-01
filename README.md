@@ -1,10 +1,49 @@
 # Herlink
 
+<div align="center">
+
+Download videos and audio from **YouTube, X/Twitter, Instagram, TikTok and 1,600+ sites** — right from your terminal.
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D18-green.svg)](https://nodejs.org/)
+[![npm](https://img.shields.io/badge/npm-herlink-red.svg)](https://www.npmjs.com/package/herlink)
+
+</div>
+
 <img src="img/Screenshot_20260816_164457_Termux.jpg" alt="Herlink download screen" style="border-radius: 4px; border: 1px solid #e0e0e0; padding: 4px; max-width: 100%; height: auto; display: block; margin: 0 auto;">
 
-**Download videos from YouTube, X/Twitter, Instagram, TikTok and 1,600+ other sites — right from your terminal.**
-
 Paste a URL, pick a resolution (or audio-only MP3), done. No popups, no fake download buttons, no sketchy redirects.
+
+---
+
+## Table of Contents
+
+- [Features](#features)
+- [Quick Start](#quick-start)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Flags reference](#flags-reference)
+- [How It Works](#how-it-works)
+- [Roadmap](#roadmap)
+- [Development](#development)
+- [Contributing](#contributing)
+- [License](#license)
+- [Contact](#contact)
+
+---
+
+## Features
+
+- **1600+ sites** — YouTube, X/Twitter, Instagram, TikTok, and more.
+- **Interactive TUI** — paste a URL and pick a resolution, quality, or MP3 from a mouse + keyboard driven picker.
+- **Parallel downloads** — multiple URLs at once, each with its own progress bar.
+- **MP3 extraction** — grab just the audio as high-quality MP3 with embedded cover art *by default*.
+- **Embedded metadata + cover art on by default** — every download gets title, thumbnail and metadata baked in (requires ffmpeg).
+- **Resume** — interrupted downloads pick up where they left off with `--continue`.
+- **Subtitles** — download subtitles for your chosen languages.
+- **Cookies** — sign into login-gated sites with `--cookies`.
+- **Scriptable** — drop the picker and use `--best` / `--mp3` straight from a shell script.
+- **No Python required** — ships and manages its own yt-dlp binary, with your system version used when present.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -13,44 +52,23 @@ Paste a URL, pick a resolution (or audio-only MP3), done. No popups, no fake dow
 ## Quick Start
 
 ```sh
-# Install globally (recommended)
 npm install -g herlink
 
-# Or try without installing
-npx herlink
-
-# Basic usage - pick a format from the picker
+# Launch the picker with a URL
 herlink https://youtu.be/dQw4w9WgXcQ
 
-# Scriptable mode - best quality, no picker
+# Just run it — it detects a copied URL from your clipboard
+herlink
+
+# Grab the best download with no interaction
 herlink --best https://youtu.be/dQw4w9WgXcQ
 
-# Audio-only MP3
+# Audio only, as MP3
 herlink --mp3 https://youtu.be/dQw4w9WgXcQ
 
-# Resume a partial download
-herlink --continue https://youtu.be/dQw4w9WgXcQ
-
-# Batch download from a file
+# Batch-download a list of URLs
 herlink --file urls.txt
 ```
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
----
-
-## About The Project
-
-**Herlink** is a terminal-based video downloader that puts you in control. Built with [Ink](https://github.com/vadimdemedes/ink) and [yt-dlp](https://github.com/yt-dlp/yt-dlp), it lets you:
-
-- Download from YouTube, X/Twitter, Instagram, TikTok and 1,600+ sites
-- Pick resolution, format, and audio quality before downloading
-- Download multiple URLs in parallel with individual progress bars
-- Resume interrupted downloads with `--continue`
-- Embed metadata and cover art with `--embed-metadata`
-- Use custom cookies with `--cookies`
-
-Why was it created? Most terminal downloaders either require complex config or hide the format selection. Herlink puts the power in your hands with a beautiful TUI, mouse support, and keyboard navigation — all while keeping things simple and hackable.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -60,21 +78,33 @@ Why was it created? Most terminal downloaders either require complex config or h
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) 18+
-- [yt-dlp](https://yt-dlp.org/) (bundled on first run, or use your system version)
-- [ffmpeg](https://ffmpeg.org/) (for merging high-res streams and MP3 extraction)
+- **[Node.js](https://nodejs.org/) 18+**
+- **[yt-dlp](https://yt-dlp.org/)** — bundled and managed on first run; your system version is used if already installed.
+- **[ffmpeg](https://ffmpeg.org/)** — required for merging high-resolution streams, MP3 extraction, and embedding metadata/cover art.
 
-### Install
+### Install globally (recommended)
 
 ```sh
-# Install globally (recommended)
 npm install -g herlink
+```
 
-# Or from source
+### Run without installing
+
+```sh
+npx herlink
+```
+
+### Install from source
+
+```sh
+git clone https://github.com/WilberHernan/Herlink.git
+cd Herlink
 npm install
 npm run build
-# Then: npm link  # or: npx herlink
+npm link        # exposes the `herlink` command
 ```
+
+Downloads land in `~/Downloads` by default — on **Termux** they go to `~/storage/shared/Download/Downlink` (visible in the Android Downloads app).
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -82,64 +112,85 @@ npm run build
 
 ## Usage
 
-### Basic format
+### Just type `herlink`
+
+Run `herlink` with no arguments and it opens the interactive picker. If you've copied a URL, **Herlink detects it and offers to paste it** — just press <kbd>Tab</kbd> to use what's on your clipboard.
+
+### Launch with a URL
 
 ```sh
-herlink <url>
+herlink https://youtu.be/dQw4w9WgXcQ
 ```
 
-### Pick a format (interactive picker)
-
-```sh
-herlink https://youtu.be/dQw44w9WgXcQ
-# Use ↑/↓ or j/k arrows, or number keys to select
-# Enter to download, esc to go back, ^c to quit
-```
+The picker shows available formats. Use <kbd>↑</kbd>/<kbd>↓</kbd> or <kbd>j</kbd>/<kbd>k</kbd>, the mouse, or number keys to select. <kbd>Enter</kbd> downloads, <kbd>Esc</kbd> goes back, <kbd>Ctrl+C</kbd> quits.
 
 ### Scriptable mode (no picker)
 
+Pass one or more URLs (or `--file`) with `--best` or `--mp3` to skip the picker entirely — great for scripts and headless use.
+
 ```sh
-# Best quality video (skips picker)
-herlink --best <url>
-
-# Audio-only MP3
-herlink --mp3 <url>
-
-# Best quality + embed metadata
-herlink --best --embed-metadata <url>
+herlink --best https://youtu.be/dQw4w9WgXcQ
+herlink --mp3 https://www.youtube.com/watch?v=dQw4w9WgXcQ  # audio-only MP3 + cover art
+herlink --best --embed-metadata https://youtu.be/dQw4w9WgXcQ
 ```
 
-### Flags reference
+> `--best` and `--mp3` are mutually exclusive and need at least one URL or a `--file`.
 
-| Flag | What it does |
-| ---- | ------------ |
-| `--theme <auto\|light\|dark>` | starting theme for one launch |
-| `--best` / `--mp3` | scriptable mode: no picker, applies to every url |
-| `-o <dir>` | output folder (replaces `~/Downloads` for the run) |
-| `--continue` | resume partial downloads (keeps `.part`) |
+### Multiple URLs
+
+Pass as many URLs as you like — they download in parallel:
+
+```sh
+herlink https://youtu.be/a https://youtu.be/b https://youtu.be/c
+```
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
+## Flags reference
+
+| Flag | Description |
+| ---- | ----------- |
+| `herlink` | launch the picker; auto-suggests a copied URL (Tab to paste) |
+| `--theme <auto\|light\|dark>` | theme for this run |
+| `--best` | scriptable: best-quality download, no picker |
+| `--mp3` | scriptable: audio-only MP3, no picker |
+| `-o <dir>` | output folder (overrides `~/Downloads`) |
+| `--continue` | resume partial downloads (keeps/uses `.part` files) |
 | `--cookies <file>` | Netscape-format cookies file for login-gated sites |
 | `--subs [langs]` | download subtitles (`--subs=es,en`; empty = all languages) |
-| `--embed-metadata` | embed title/thumbnail/metadata (requires ffmpeg) |
-| `--no-update` | skip the bundled yt-dlp self-update for one run |
-| `--file <file>` | read urls from a file (one per line) |
-| `-h` / `-v` | help / version |
+| `--embed-metadata` | embed title/thumbnail/metadata (on by default, requires ffmpeg) |
+| `--no-embed-metadata` | turn off the default metadata/cover-art embedding |
+| `--no-update` | skip the bundled yt-dlp self-update for this run |
+| `--file <file>` | read URLs from a file (one per line) |
+| `-h`, `--help` | show help |
+| `-v`, `--version` | show version |
 
-### Example: Download a playlist
+### Examples
+
+Download a playlist in batch:
 
 ```sh
 herlink "https://youtube.com/playlist?list=..." --best --file playlist.txt
 ```
 
-### Example: Download with cookies
+Download a login-gated video with cookies:
 
 ```sh
 herlink --cookies cookies.txt https://youtu.be/dQw4w9WgXcQ
 ```
 
-### Example: Resume a download
+Resume an interrupted download:
 
 ```sh
 herlink --continue https://youtu.be/dQw4w9WgXcQ
+```
+
+Grab Spanish and English subtitles:
+
+```sh
+herlink --subs=es,en https://youtu.be/dQw4w9WgXcQ
 ```
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
@@ -148,10 +199,10 @@ herlink --continue https://youtu.be/dQw4w9WgXcQ
 
 ## How It Works
 
-- Powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp). On first run, herlink downloads the standalone yt-dlp binary to `~/.herlink/bin` — no Python required. If you already have yt-dlp installed, it uses yours.
-- ffmpeg (needed for merging high-res streams and mp3 extraction) is found on your PATH, with `ffmpeg-static` as a bundled fallback.
-- The UI is [Ink](https://github.com/vadimdemedes/ink) — React for the terminal.
-- Downloads run in parallel, each getting its own row with a progress bar.
+- Powered by **[yt-dlp](https://github.com/yt-dlp/yt-dlp)**. On first run Herlink downloads the standalone yt-dlp binary into `~/.herlink/bin` — no Python required. If you already have yt-dlp installed, it uses yours and keeps it fresh.
+- **[ffmpeg](https://ffmpeg.org/)** — found on your `PATH`, with a `ffmpeg-static` bundled fallback — merges high-resolution streams, extracts MP3, and bakes in metadata + cover art.
+- The TUI is built with **[Ink](https://github.com/vadimdemedes/ink)** — React for the terminal — with mouse support.
+- Downloads run **in parallel**, each with its own row and progress bar.
 - Interrupted downloads keep their `.part` files so `--continue` can resume them.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
@@ -160,21 +211,18 @@ herlink --continue https://youtu.be/dQw4w9WgXcQ
 
 ## Roadmap
 
-[x] Clipboard detection: launch bare and auto-suggest the url you copied
-[x] `curl herlink.sh | sh` installer
-[x] Publish to npm (`npm i -g herlink` / `npx herlink`)
-[x] `--best` / `--mp3` flags to skip the picker (scriptable mode)
-[x] `-o <dir>` to choose the output folder
-[x] Batch queue: multiple urls / `--file`, parallel downloads
-[x] Playlist and thread-with-multiple-videos support
-[x] Resume (`--continue`), cookies (`--cookies`), subtitles (`--subs`),
-      metadata embedding (`--embed-metadata`)
+- [x] Clipboard detection: launch bare and auto-suggest the copied URL
+- [x] `curl herlink.sh | sh` installer
+- [x] Published to npm (`npm i -g herlink` / `npx herlink`)
+- [x] `--best` / `--mp3` flags to skip the picker (scriptable mode)
+- [x] `-o <dir>` to choose the output folder
+- [x] Batch queue: multiple URLs / `--file`, parallel downloads
+- [x] Playlist and multi-video thread support
+- [x] Resume (`--continue`), cookies (`--cookies`), subtitles (`--subs`), metadata embedding (`--embed-metadata`)
 
-## Ideas
+### Ideas
 
-- [ ] Clipboard detection: launch bare and auto-suggest the url you copied
-- [ ] `curl herlink.sh | sh` installer
-- [ ] Screenshot del progress bar fino en el README
+- [ ] Screenshot of the thin progress bar for the README (current one shows the previous version)
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -196,7 +244,7 @@ npm run typecheck
 npm test
 ```
 
-To try it as a global command without publishing: `npm link`, then run `herlink` anywhere.
+To try the `herlink` command globally without publishing: `npm link`, then run `herlink` anywhere.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -222,7 +270,7 @@ Don't forget to give the project a star! Thanks again!
 
 ## License
 
-Distributed under the MIT License. See `LICENSE.txt` for more information.
+Distributed under the **MIT License**. See [LICENSE](LICENSE) for more information.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -232,24 +280,8 @@ Distributed under the MIT License. See `LICENSE.txt` for more information.
 
 - GitHub: [@WilberHernan](https://github.com/WilberHernan)
 - Twitter: [@wilberhernan06](https://twitter.com/wilberhernan06)
-- Email: wilberhernan06@gmail.com
+- Email: [wilberhernan06@gmail.com](mailto:wilberhernan06@gmail.com)
+
+Project Link: [https://github.com/WilberHernan/Herlink](https://github.com/WilberHernan/Herlink)
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
-
----
-
-## Badges
-
-<!-- Shields.io badges - update shields.io URLs with your project's actual metrics -->
-
-[release-badge]: https://img.shields.io/github/v/release/WilberHernan/herlink.svg?style=for-the-badge
-[releases-link]: https://github.com/WilberHernan/herlink/releases
-
-[license-badge]: https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge
-[license-link]: https://opensource.org/licenses/MIT
-
-[stars-badge]: https://img.shields.io/github/stars/WilberHernan/herlink.svg?style=for-the-badge
-[stars-link]: https://github.com/WilberHernan/herlink/stargazers
-
-[forks-badge]: https://img.shields.io/github/forks/WilberHernan/herlink.svg?style=for-the-badge
-[forks-link]: https://github.com/WilberHernan/herlink/forks
