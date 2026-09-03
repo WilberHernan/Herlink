@@ -5,7 +5,6 @@ import path from 'node:path'
 import test from 'node:test'
 import {
   TERMUX_STORAGE_HINT,
-  TERMUX_WAKE_LOCK_HINT,
   acquireWakeLock,
   commandWorks,
   isSharedStorageDir,
@@ -230,9 +229,4 @@ test('acquireWakeLock()/releaseWakeLock() hold and release the state on Termux',
     bin.restore()
     restoreTermux()
   }
-})
-
-test('TERMUX_WAKE_LOCK_HINT is a non-empty background hint string', () => {
-  assert.equal(typeof TERMUX_WAKE_LOCK_HINT, 'string')
-  assert.ok(TERMUX_WAKE_LOCK_HINT.length > 0)
 })

@@ -10,7 +10,6 @@ export const YTDLP_TERMUX_ERROR = 'yt-dlp no está instalado. Instálalo con: pk
 export const FFMPEG_TERMUX_HINT = 'ffmpeg no encontrado. Instálalo con: pkg install ffmpeg'
 export const TERMUX_API_HINT = 'El portapapeles necesita la app Termux:API. Instálala con: pkg install termux-api'
 export const TERMUX_STORAGE_HINT = 'Ejecuta termux-setup-storage para habilitar el almacenamiento compartido (~/storage/shared/Download/Downlink)'
-export const TERMUX_WAKE_LOCK_HINT = '🔒 Mantengo la pantalla activa mientras descargo — termux-wake-lock'
 // relative to ~/storage — shared → /sdcard (root of Android's internal
 // storage), so shared/Download/Downlink maps to the real /sdcard/Download/
 // folder, visible in the file manager under Downloads/Downlink

@@ -2,8 +2,8 @@ import React, {useCallback, useEffect, useRef, useState} from 'react'
 import os from 'node:os'
 import path from 'node:path'
 import {Box, Text, useApp, useInput, useWindowSize} from 'ink'
-import Spinner from 'ink-spinner'
 import {FullScreen} from './components/fullscreen.js'
+import {PulseDots} from './components/pulse-dots.js'
 import {Logo, ROSE_ROWS} from './components/logo.js'
 import {Panel} from './components/panel.js'
 import {ProgressBar} from './components/progress-bar.js'
@@ -16,7 +16,6 @@ import {formatBytes, formatDuration, formatSpeed, shortenPath, truncate, wrapTex
 import {addToHistory, loadHistory} from './lib/history.js'
 import {detectPlatform, isProbablyUrl, type Platform} from './lib/platforms.js'
 import {
-  TERMUX_WAKE_LOCK_HINT,
   acquireWakeLock,
   isTermux,
   releaseWakeLock,
@@ -263,7 +262,7 @@ export function restoreAfterRejectedSubmit(current: string, rejectedValue: strin
 /** Short label per item status on the downloads screen (D4, REQ-par-006). */
 const STATUS_LABEL: Record<ItemStateStatus, string> = {
   queued: 'en cola',
-  probing: 'obteniendo info…',
+  probing: 'cargando…',
   picking: 'eligiendo formato…',
   downloading: 'descargando…',
   processing: 'procesando…',
@@ -386,10 +385,6 @@ function AppContent({
   // wheel and the keys; highlightRef mirrors it for the click/↵-hint paths
   const [pickerActiveIndex, setPickerActiveIndex] = useState(0)
   const [warning, setWarning] = useState<string>()
-  // init progress line on the downloads screen while the first queue spins up
-  const [initStatus, setInitStatus] = useState<string>()
-  // Termux background hint: true while a wakelock is held for an active queue
-  const [wakeLockActive, setWakeLockActive] = useState(false)
 
   const queueRef = useRef<ReturnType<typeof createParallelQueue> | undefined>(undefined)
   const initRef = useRef<CachedInit<InitContext> | undefined>(undefined)
@@ -434,14 +429,16 @@ function AppContent({
   const getInit = useCallback((): CachedInit<InitContext> => {
     if (!initRef.current) {
       initRef.current = createCachedInit<InitContext>(async () => {
-        const ytdlp = await ensureYtDlp(setInitStatus)
+        // init status is no longer surfaced to the UI (quiet startup); the
+        // CLI path still streams it to stderr via its own onStatus callback
+        const ytdlp = await ensureYtDlp(() => {})
         // herlink manages freshness of the bundled copy: silent -U once per run
         // (D11, REQ-020/021) and --no-update in probe/download args (REQ-022);
         // --no-update opts out; failure never blocks startup
         const bundled = isBundledBinary(ytdlp)
         const noUpdate_ = effectiveNoUpdate(noUpdate ?? false, ytdlp)
         if (!noUpdate && bundled) {
-          await maybeSelfUpdate(ytdlp, setInitStatus)
+          await maybeSelfUpdate(ytdlp)
         }
         const ffmpeg = await findFfmpeg()
         // resolve the Termux download dir INSIDE init, before the queue exists:
@@ -456,7 +453,6 @@ function AppContent({
         }
         ffmpegRef.current = ffmpeg
         setOutDir(outDir_)
-        setInitStatus(undefined)
         return {ytdlp, ffmpeg, noUpdate: noUpdate_, outDir: outDir_}
       })
     }
@@ -550,7 +546,6 @@ function AppContent({
             queueRef.current = undefined
             // the run ended — drop the wakelock (P1-1); idempotent, safe on desktop
             releaseWakeLock()
-            setWakeLockActive(false)
             // history gains the completed run's links (every submit, including
             // mid-run joins), never a cancelled one
             if (!done.cancelled) for (const itemUrl of submittedRef.current) setHistory(addToHistory(itemUrl))
@@ -563,8 +558,8 @@ function AppContent({
         enqueue(queue, merged)
         // Termux background robustness: hold a CPU wakelock for the whole run,
         // so Android doesn't deep-sleep while the queue works (P1-1). No-op and
-        // hint-only when termux-wake-lock is unavailable.
-        if (queue.hasActive()) setWakeLockActive(acquireWakeLock())
+        // silent when termux-wake-lock is unavailable.
+        if (queue.hasActive()) acquireWakeLock()
         return true
       } catch (error) {
         pendingJoinRef.current = []
@@ -644,7 +639,6 @@ function AppContent({
     setPickerItemId(undefined)
     // whole-run cancel ends the background window — drop the wakelock (P1-1)
     releaseWakeLock()
-    setWakeLockActive(false)
   }, [])
 
   useInput(
@@ -928,11 +922,9 @@ function AppContent({
       {screen === 'downloads' && (
         <Box flexDirection="column" alignItems="center" width={contentWidth}>
           {items.size === 0 ? (
-            <Text>
-              <Text color={theme.accent}>
-                <Spinner type="dots" />
-              </Text>
-              <Text color={theme.muted}> {initStatus ?? 'preparando…'}</Text>
+            /* static loader while the first submission fetches item info */
+            <Text color={theme.accent}>
+              <PulseDots color={theme.accent} />
             </Text>
           ) : (
             <>
@@ -948,8 +940,19 @@ function AppContent({
                         ) : item.progress ? (
                           <Text color={theme.muted}>{indeterminateMeta(item.progress)}</Text>
                         ) : (
-                          <Spinner type="dots" />
+                          /* no bytes yet: pulse in the same per-status colour as
+                             the other active rows so the loader is consistent */
+                          <PulseDots color={rowColor(item.status)} />
                         )}
+                      </Text>
+                    </Box>
+                  ) : item.status === 'probing' ? (
+                    /* probing: mirror the empty-state first loader — same accent
+                       color, same centering — so it reads as one continuous
+                       pulse (no url, no text) */
+                    <Box alignItems="center" justifyContent="center" width={boxWidth}>
+                      <Text color={theme.accent}>
+                        <PulseDots color={theme.accent} />
                       </Text>
                     </Box>
                   ) : (
@@ -958,8 +961,8 @@ function AppContent({
                     <Box justifyContent="space-between">
                       <Text color={theme.muted}>{truncate(item.url, downloadTitleMax)}</Text>
                       {PROGRESS_STATUSES.includes(item.status) ? (
-                        <Text bold color={rowColor(item.status)}>
-                          <Spinner type="dots" />
+                        <Text bold>
+                          <PulseDots color={rowColor(item.status)} />
                         </Text>
                       ) : (
                         <Text bold color={rowColor(item.status)}>
@@ -974,14 +977,6 @@ function AppContent({
                 <>
                   <Gap lines={1} />
                   <Text color={theme.muted}>{queuedCount} en cola</Text>
-                </>
-              )}
-              {wakeLockActive && (
-                <>
-                  <Gap lines={1} />
-                  {/* Termux background hint: the wakelock keeps the download alive
-                      when the screen locks; harmless on desktop (never set true) */}
-                  <Text color={theme.muted}>{TERMUX_WAKE_LOCK_HINT}</Text>
                 </>
               )}
             </>

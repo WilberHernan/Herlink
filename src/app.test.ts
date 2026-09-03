@@ -43,7 +43,9 @@ test('App with initialUrls opens the downloads screen showing init progress (REQ
         onOutcome: () => {},
       }),
     )
-    assert.match(output, /preparando/, 'the downloads screen must show while init starts')
+    // REQ-par-001: the downloads screen is visible while init runs, showing
+    // the pulse loader (no init-status text — startup is quiet)
+    assert.match(output, /\u25cf/, 'the downloads screen shows the pulse loader while init starts')
     // REQ-par-001: downloads run in the background, the input stays reachable
     assert.match(output, /volver al input/, 'the downloads screen must offer the way back to the input')
   } finally {
