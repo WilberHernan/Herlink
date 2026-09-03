@@ -1023,10 +1023,13 @@ function AppContent({
                     </Box>
                   ) : (
                     /* other states: title/url + status. Active states show the
-                       loader instead of a word; quiet/terminal states keep the label */
+                       loader instead of a word; quiet/terminal states keep the label.
+                       processing (ffmpeg convert) renders NO loader and NO label —
+                       the conversion runs in the background so the flow jumps
+                       straight from the download bar to "Tu archivo está en..." */
                     <Box justifyContent="space-between">
                       <Text color={theme.muted}>{truncate(item.url, downloadTitleMax)}</Text>
-                      {PROGRESS_STATUSES.includes(item.status) ? (
+                      {item.status === 'processing' ? null : PROGRESS_STATUSES.includes(item.status) ? (
                         <Text bold>
                           <PulseDots color={rowColor(item.status)} />
                         </Text>
