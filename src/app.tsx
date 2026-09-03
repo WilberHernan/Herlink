@@ -987,16 +987,15 @@ function AppContent({
       {screen === 'done' && doneInfo && doneSummaryInfo && (
         <Box flexDirection="column" alignItems="center">
           <Text>
-            <Text bold color={doneInfo.cancelled ? theme.warning : theme.success}>
-              {doneSummaryInfo.heading}{' '}
-            </Text>
+            <Text bold color={doneInfo.cancelled ? theme.warning : theme.success}>✓ </Text>
+            <Text bold color={theme.accent}>{doneSummaryInfo.heading.replace(/^✓\s*/, '')}{' '}</Text>
             <Text color={theme.muted}>{doneSummaryInfo.sub}</Text>
           </Text>
           <Gap />
           {doneInfo.filepaths.map((filepath, index) => (
             // two files may resolve to the same path (same title from different
             // urls) — a unique key keeps the map stable
-            <Text key={`${filepath}-${index}`} color={theme.info}>
+            <Text key={`${filepath}-${index}`} color={theme.muted} dimColor>
               {shortenPath(filepath, os.homedir(), 60)}
             </Text>
           ))}
