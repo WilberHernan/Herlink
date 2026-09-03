@@ -6,7 +6,6 @@ import {mock} from 'node:test'
 import test from 'node:test'
 import {createParallelQueue, runQueue, runScriptable} from './queue.js'
 import type {DoneInfo, ParallelQueue, ParallelQueueOptions, QueueDeps} from './queue.js'
-import {removePartials} from './ytdlp.js'
 import type {DownloadArgs, DownloadChoice, VideoInfo} from './ytdlp.js'
 
 const choice: DownloadChoice = {label: '1080p · mp4', kind: 'video', args: ['-f', 'bv*+ba/b']}
@@ -861,18 +860,15 @@ test('parallelQueue cancelAll aborts running items, queued never start, cleanup 
           tmp,
           opts.url.includes('a.example') ? 'a.mp4' : opts.url.includes('b.example') ? 'b.mp4' : 'c.mp4',
         )
-        // the real download writes these and keeps going; on abort its signal
-        // branch runs removePartials — dest + .ytdl removed, .part kept (REQ-par-011)
+        // soft cancel (signal.aborted) keeps .part/.ytdl so a later --continue
+        // can resume (REQ-par-011) — the real download does NOT hard-delete here
         fs.writeFileSync(`${dest}.part`, 'partial')
-        fs.writeFileSync(dest, 'final')
         fs.writeFileSync(`${dest}.ytdl`, 'meta')
         running.push({url: opts.url, signal, dest})
         return new Promise<string>((resolve, reject) => {
           signal?.addEventListener('abort', () => {
-            void removePartials([dest]).then(() => {
-              markAbortHandled()
-              reject(new Error('Descarga cancelada.'))
-            })
+            markAbortHandled()
+            reject(new Error('Descarga cancelada.'))
           })
         })
       },
@@ -899,9 +895,10 @@ test('parallelQueue cancelAll aborts running items, queued never start, cleanup 
     assert.equal(running.length, 3)
     for (const record of running) {
       assert.equal(record.signal?.aborted, true, `running item ${record.url} must be aborted`)
-      assert.ok(!fs.existsSync(record.dest), `${record.dest} must be removed on cancel`)
-      assert.ok(!fs.existsSync(`${record.dest}.ytdl`), `${record.dest}.ytdl must be removed on cancel`)
+      // soft cancel keeps the partial + resume metadata so --continue can resume
+      // (REQ-par-011); the queue must not hard-delete on a cancel
       assert.ok(fs.existsSync(`${record.dest}.part`), `${record.dest}.part must be kept for resume (REQ-par-011)`)
+      assert.ok(fs.existsSync(`${record.dest}.ytdl`), `${record.dest}.ytdl must be kept for resume (REQ-par-011)`)
     }
   } finally {
     fs.rmSync(tmp, {recursive: true, force: true})

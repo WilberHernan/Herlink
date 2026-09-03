@@ -508,7 +508,9 @@ export function createParallelQueue(opts: ParallelQueueOptions): ParallelQueue {
         const result = await runItem(entry.item, runOpts, entry.controller.signal, itemHooks(entry.itemId), opts.deps)
         outcome.filepaths.push(...result.filepaths)
         outcome.errors.push(...result.errors)
-        opts.onItemState(entry.itemId, result.errors.length > 0 ? 'error' : 'done')
+        // a cancelled item (picker-ESC or abort) must NOT render as a successful
+        // 'done' ✓ — it produced nothing. Only a clean download is 'done'.
+        opts.onItemState(entry.itemId, result.errors.length > 0 || result.cancelled ? 'error' : 'done')
       } catch (error) {
         // runItem catches its own failures; this guards a rejecting choiceFor
         outcome.errors.push(error instanceof Error ? error.message : String(error))

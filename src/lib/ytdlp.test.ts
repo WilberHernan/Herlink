@@ -452,7 +452,7 @@ test('buildDownloadArgs() keeps a cookies path starting with "-" as its own argv
   }
 })
 
-test('removePartials() deletes dest and .ytdl but keeps .part (REQ-006)', async () => {
+test('removePartials() deletes dest, .part and .ytdl on explicit delete (REQ-006, M1)', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'herlink-partials-'))
   try {
     const dest = path.join(dir, 'video.mp4')
@@ -462,8 +462,9 @@ test('removePartials() deletes dest and .ytdl but keeps .part (REQ-006)', async 
     await removePartials([dest])
     assert.equal(fs.existsSync(dest), false)
     assert.equal(fs.existsSync(`${dest}.ytdl`), false)
-    assert.equal(fs.existsSync(`${dest}.part`), true)
-    assert.equal(fs.readFileSync(`${dest}.part`, 'utf8'), 'partial-data')
+    // explicit delete must clean the .part orphan too, so a discarded item
+    // leaves nothing behind for a later --continue to resume (M1)
+    assert.equal(fs.existsSync(`${dest}.part`), false)
   } finally {
     fs.rmSync(dir, {recursive: true, force: true})
   }

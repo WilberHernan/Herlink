@@ -164,8 +164,14 @@ export function TextInput({
     const [start, end] = selection ?? [cursor, cursor]
     const next = value.slice(0, start) + clean + value.slice(end)
     edit(next, start + clean.length)
-    // a multi-char chunk is a paste — submit right away when it completes the field
-    if (clean.length > 1 && value === '' && submitOnPaste?.(next.trim())) onSubmit?.(next)
+    // a multi-char chunk is a paste — submit right away when it completes the field;
+    // if the paste carries whitespace-separated tokens, check each token so a mixed
+    // valid+invalid paste still triggers the validated submit path (H-3)
+    if (clean.length > 1 && value === '') {
+      const trimmed = next.trim()
+      const shouldSubmit = submitOnPaste?.(trimmed) || trimmed.split(/\s+/).some(t => submitOnPaste?.(t))
+      if (shouldSubmit) onSubmit?.(next)
+    }
   })
 
   // scroll the window so the cursor stays visible (it can sit one past the end)

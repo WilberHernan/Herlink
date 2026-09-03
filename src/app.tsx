@@ -406,6 +406,8 @@ function AppContent({
   // creating a second queue (Termux resolveOutDir can refire this effect)
   const startingRef = useRef(false)
   const pendingJoinRef = useRef<string[]>([])
+  // urls of rows the user deleted with `d` — filtered from done errors/history (H-4)
+  const deletedUrlsRef = useRef<string[]>([])
   // initialUrls are submitted exactly once; on Termux the async outDir
   // resolution recreates startItems and would otherwise re-enqueue them
   const initialSubmittedRef = useRef(false)
@@ -504,16 +506,10 @@ function AppContent({
             // the 'picking' event precedes the choiceFor callback; stash the
             // itemId so choiceFor knows which row its picker belongs to
             if (status === 'picking') pickForRef.current = itemId
-            // pop the url OUTSIDE the updater: shift() mutates the ref, so it
-            // must live in the event handler (which may be impure), not inside
-            // the setState updater (which must be pure — React may replay it,
-            // e.g. StrictMode, pairing each row with the wrong url otherwise)
-            const url = pendingUrlsRef.current.shift()
             setItems(prev => {
               const row = prev.get(itemId)
               if (!row) {
-                // start() emits the row-creating events synchronously, before
-                // the app knows itemId — pair each with its url (FIFO)
+                const url = pendingUrlsRef.current.shift()
                 if (url === undefined) return prev
                 return new Map(prev).set(itemId, {status, url})
               }
@@ -537,7 +533,7 @@ function AppContent({
             pickForRef.current = undefined
             if (!itemId) return 'cancel'
             pickInfosRef.current.set(itemId, info)
-            setScreen('picker')
+            setScreen(prev => (prev === 'input' ? prev : 'picker'))
             return new Promise(resolve => {
               pickersRef.current.set(itemId, resolve)
               setPickerItemId(prev => prev ?? itemId)
@@ -549,10 +545,14 @@ function AppContent({
             releaseWakeLock()
             // history gains the completed run's links (every submit, including
             // mid-run joins), never a cancelled one
+            if (deletedUrlsRef.current.length > 0) {
+                  const deleted = deletedUrlsRef.current
+                  done.errors = done.errors.filter(err => !deleted.some(url => err.includes(url)))
+                }
             if (!done.cancelled) for (const itemUrl of submittedRef.current) setHistory(addToHistory(itemUrl))
             onOutcome(done)
             setDoneInfo(done)
-            setScreen('done')
+            setScreen(prev => (prev === 'input' ? prev : 'done'))
           },
         })
         queueRef.current = queue
@@ -563,9 +563,11 @@ function AppContent({
         if (queue.hasActive()) acquireWakeLock()
         return true
       } catch (error) {
-        pendingJoinRef.current = []
+        const toRestore = pendingJoinRef.current.length > 0 ? [...urls, ...pendingJoinRef.current].join(' ') : urls.join(' ')
+            pendingJoinRef.current = []
         setWarning(error instanceof Error ? error.message : String(error))
-        setScreen('input')
+        setScreen(prev => (prev === 'input' ? prev : 'input'))
+            setUrlInput(current => restoreAfterRejectedSubmit(current, toRestore))
         return false
       } finally {
         startingRef.current = false
@@ -613,6 +615,7 @@ function AppContent({
     highlightRef.current = 0
     setPickerActiveIndex(0)
     submittedRef.current = []
+    deletedUrlsRef.current = []
     pickersRef.current.clear()
     pickInfosRef.current.clear()
   }, [])
@@ -648,6 +651,14 @@ function AppContent({
   // intentionally distinct from ESC soft-cancel, which preserves .part/.ytdl
   // for --continue resume.
   const deleteErrorItem = useCallback(() => {
+        let deletedUrl: string | undefined
+        for (const item of items.values()) {
+          if (item.status === 'error') {
+            deletedUrl = item.url
+            break
+          }
+        }
+        if (!deletedUrl) return
     setItems(prev => {
       for (const [id, item] of prev) {
         if (item.status === 'error') {
@@ -658,7 +669,15 @@ function AppContent({
       }
       return prev
     })
-  }, [])
+        const idx = submittedRef.current.indexOf(deletedUrl)
+        if (idx !== -1) submittedRef.current.splice(idx, 1)
+        deletedUrlsRef.current.push(deletedUrl)
+        setDoneInfo(prev => {
+          if (!prev) return prev
+          const filtered = prev.errors.filter(err => !err.includes(deletedUrl!))
+          return filtered.length === prev.errors.length ? prev : {...prev, errors: filtered}
+        })
+      }, [items])
 
   useInput(
     (input, key) => {
@@ -674,8 +693,12 @@ function AppContent({
       }
       if (key.return) {
         if (screen === 'done') resetToInput()
-        // REQ-par-001: downloads keep running, the input stays reachable
-        else if (screen === 'downloads') setScreen('input')
+        else if (screen === 'downloads') {
+              const hasActiveProbe = Array.from(items.values()).some(
+                item => item.status === 'probing' || item.status === 'picking' || item.status === 'queued',
+              )
+              if (!hasActiveProbe) setScreen('input')
+            }
         return
       }
       // per-row delete on the downloads screen: drop the topmost errored row
@@ -692,16 +715,21 @@ function AppContent({
   // one paste may carry several links (REQ-par-001); whitespace separates them
   const handleUrlSubmit = async (value: string) => {
     const urls = splitSubmittedUrls(value)
+    const tokens = value.trim().split(/\s+/).filter(Boolean)
+    const invalid = tokens.filter(t => !isProbablyUrl(t))
     if (urls.length === 0) {
-      setWarning('Eso no parece un enlace — pega una url completa')
+      if (invalid.length > 0) setWarning(`Se ignoraron ${invalid.length} enlaces inválidos: ${invalid.join(', ')}`)
+      else setWarning('Eso no parece un enlace — pega una url completa')
       return
     }
+        if (invalid.length > 0) setWarning(`Se ignoraron ${invalid.length} enlaces inválidos: ${invalid.join(', ')}`)
     // clear immediately: a stale value can never ride along on the next paste
     // after a mid-run return (REQ-par-001). If the queue never accepts the
     // links (init failure) the field is restored for retry.
     setUrlInput('')
     const accepted = await startItems(urls)
     if (!accepted) setUrlInput(current => restoreAfterRejectedSubmit(current, value))
+        if (invalid.length > 0) setWarning(`Se ignoraron ${invalid.length} enlaces inválidos: ${invalid.join(', ')}`)
   }
 
   const clipboardOffered = Boolean(clipboardUrl) && urlInput === ''
@@ -769,7 +797,19 @@ function AppContent({
     if (key === '↵') {
       if (screen === 'input') return () => handleUrlSubmit(urlInput)
       if (screen === 'picker') return () => handlePick({value: highlightRef.current})
-      if (screen === 'downloads') return () => setScreen('input')
+      if (screen === 'downloads')
+
+        return () => {
+
+          const hasActiveProbe = Array.from(items.values()).some(
+
+            item => item.status === 'probing' || item.status === 'picking' || item.status === 'queued',
+
+          )
+
+          if (!hasActiveProbe) setScreen('input')
+
+        }
       if (screen === 'done') return resetToInput
     }
     return undefined // ↑↓ / ↑ stay keyboard-only

@@ -7,7 +7,7 @@ import path from 'node:path'
 import {Readable} from 'node:stream'
 import {pipeline} from 'node:stream/promises'
 import {formatBytes} from './format.js'
-import {FFMPEG_TERMUX_HINT, isSharedStorageDir, isTermux, YTDLP_TERMUX_ERROR} from './termux.js'
+import {FFMPEG_TERMUX_HINT, isSharedStorageDir, isTermux, releaseWakeLock, YTDLP_TERMUX_ERROR} from './termux.js'
 
 // read at call time, not module load — tests flip $HOME between cases and a
 // cached const would freeze the first answer forever (termux.ts convention)
@@ -468,6 +468,13 @@ function killAllChildren(): void {
 
 process.on('exit', killAllChildren)
 
+// M4: release the Termux wakelock on ANY process exit, not just the UI's
+// onAllDone/cancel paths. A mid-run ^c (useApp().exit()) unmounts the app and
+// skips app.tsx's cleanup effect, so the detached termux-wake-lock child would
+// otherwise leak. releaseWakeLock is a no-op when none was held (desktop, or
+// acquireWakeLock returned false), so this is safe on every platform.
+process.on('exit', releaseWakeLock)
+
 export type DownloadArgs = {
   url: string
   choice: DownloadChoice
@@ -678,8 +685,10 @@ export function download(
         pendingProgress = null
       }
       if (signal?.aborted) {
-        // soft cancel — preserve .part/.ytdl for --continue resume (P0)
-        void removePartials(destinations, {preservePart: true})
+        // soft cancel (ESC): keep .part/.ytdl so a later --continue can resume.
+        // Deliberately do NOT call removePartials — that explicit-delete
+        // primitive is reserved for a user-initiated "discard" (e.g. the `d`
+        // key), so partials are never wiped by an ordinary cancel/error.
         reject(new Error('Descarga cancelada.'))
         return
       }
@@ -692,21 +701,16 @@ export function download(
   })
 }
 
-// KEEPS .part files so a later --continue can resume (D6, REQ-006); deletes
-// only the final destination and the .ytdl resume metadata on explicit delete.
-// On soft cancel (signal.aborted) we preserve .part/.ytdl for --continue resume.
-export function removePartials(
-  destinations: string[],
-  options?: {preservePart?: boolean},
-): Promise<unknown> {
-  if (options?.preservePart) {
-    // soft cancel — preserve .part and .ytdl for resume; keep everything for now
-    // so a later --continue can pick up where it left off
-    return Promise.resolve([])
-  }
+// EXPLICIT-delete primitive (M1): removes every artifact of a download — the
+// final destination, the .part partial AND the .ytdl resume metadata — so a
+// discarded item leaves no orphan behind (a failed download otherwise leaks
+// its .part forever). It is deliberately ONLY for a user-initiated delete
+// (e.g. the `d` key in the TUI). Error and soft-cancel paths must NEVER call
+// it: they keep .part/.ytdl so a later --continue can resume (REQ-006, P0).
+export function removePartials(destinations: string[]): Promise<readonly PromiseSettledResult<unknown>[]> {
   return Promise.allSettled(
     destinations
-      .flatMap(dest => [dest, `${dest}.ytdl`])
+      .flatMap(dest => [dest, `${dest}.part`, `${dest}.ytdl`])
       .map(file => fs.rm(file, {force: true})),
   )
 }
