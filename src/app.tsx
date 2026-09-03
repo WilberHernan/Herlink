@@ -15,7 +15,13 @@ import {clickTargetAt, findFrameRow, frameRowSpan, type ClickTarget} from './lib
 import {formatBytes, formatDuration, formatSpeed, shortenPath, truncate, wrapText} from './lib/format.js'
 import {addToHistory, loadHistory} from './lib/history.js'
 import {detectPlatform, isProbablyUrl, type Platform} from './lib/platforms.js'
-import {isTermux, resolveOutDir} from './lib/termux.js'
+import {
+  TERMUX_WAKE_LOCK_HINT,
+  acquireWakeLock,
+  isTermux,
+  releaseWakeLock,
+  resolveOutDir,
+} from './lib/termux.js'
 import {useMouseClick, type MouseEventKind} from './lib/use-mouse-click.js'
 import {nextThemeMode, ThemeProvider, type ThemeMode, useTheme} from './theme.js'
 import {createParallelQueue, type DoneInfo, type ItemStateStatus, type Outcome} from './lib/queue.js'
@@ -305,6 +311,12 @@ type AppProps = {
   embedMetadata?: boolean
   subs?: string
   noUpdate?: boolean
+  retries?: number
+  fragmentRetries?: number
+  retrySleep?: string
+  socketTimeout?: number
+  downloadArchive?: string
+  breakOnExisting?: boolean
   onOutcome: (outcome: Outcome) => void
 }
 
@@ -330,6 +342,12 @@ function AppContent({
   embedMetadata,
   subs,
   noUpdate,
+  retries,
+  fragmentRetries,
+  retrySleep,
+  socketTimeout,
+  downloadArchive,
+  breakOnExisting,
   onOutcome,
   cycleTheme,
 }: {
@@ -341,6 +359,12 @@ function AppContent({
   embedMetadata?: boolean
   subs?: string
   noUpdate?: boolean
+  retries?: number
+  fragmentRetries?: number
+  retrySleep?: string
+  socketTimeout?: number
+  downloadArchive?: string
+  breakOnExisting?: boolean
   onOutcome: (outcome: Outcome) => void
   cycleTheme: () => void
 }) {
@@ -364,6 +388,8 @@ function AppContent({
   const [warning, setWarning] = useState<string>()
   // init progress line on the downloads screen while the first queue spins up
   const [initStatus, setInitStatus] = useState<string>()
+  // Termux background hint: true while a wakelock is held for an active queue
+  const [wakeLockActive, setWakeLockActive] = useState(false)
 
   const queueRef = useRef<ReturnType<typeof createParallelQueue> | undefined>(undefined)
   const initRef = useRef<CachedInit<InitContext> | undefined>(undefined)
@@ -471,6 +497,12 @@ function AppContent({
           embedMetadata,
           subs,
           noUpdate: init.noUpdate,
+              retries,
+              fragmentRetries,
+              retrySleep,
+              socketTimeout,
+              downloadArchive,
+              breakOnExisting,
           onItemState: (itemId, status) => {
             // the 'picking' event precedes the choiceFor callback; stash the
             // itemId so choiceFor knows which row its picker belongs to
@@ -516,6 +548,9 @@ function AppContent({
           },
           onAllDone: done => {
             queueRef.current = undefined
+            // the run ended — drop the wakelock (P1-1); idempotent, safe on desktop
+            releaseWakeLock()
+            setWakeLockActive(false)
             // history gains the completed run's links (every submit, including
             // mid-run joins), never a cancelled one
             if (!done.cancelled) for (const itemUrl of submittedRef.current) setHistory(addToHistory(itemUrl))
@@ -526,6 +561,10 @@ function AppContent({
         })
         queueRef.current = queue
         enqueue(queue, merged)
+        // Termux background robustness: hold a CPU wakelock for the whole run,
+        // so Android doesn't deep-sleep while the queue works (P1-1). No-op and
+        // hint-only when termux-wake-lock is unavailable.
+        if (queue.hasActive()) setWakeLockActive(acquireWakeLock())
         return true
       } catch (error) {
         pendingJoinRef.current = []
@@ -536,7 +575,7 @@ function AppContent({
         startingRef.current = false
       }
     },
-    [outDir, resume, cookies, embedMetadata, subs, getInit, onOutcome],
+    [outDir, resume, cookies, embedMetadata, subs, retries, fragmentRetries, retrySleep, socketTimeout, downloadArchive, breakOnExisting, getInit, onOutcome],
   )
 
   // one url per queue.start(); the driver's synchronous events create the rows
@@ -603,6 +642,9 @@ function AppContent({
     pickersRef.current.clear()
     pickInfosRef.current.clear()
     setPickerItemId(undefined)
+    // whole-run cancel ends the background window — drop the wakelock (P1-1)
+    releaseWakeLock()
+    setWakeLockActive(false)
   }, [])
 
   useInput(
@@ -932,6 +974,14 @@ function AppContent({
                 <>
                   <Gap lines={1} />
                   <Text color={theme.muted}>{queuedCount} en cola</Text>
+                </>
+              )}
+              {wakeLockActive && (
+                <>
+                  <Gap lines={1} />
+                  {/* Termux background hint: the wakelock keeps the download alive
+                      when the screen locks; harmless on desktop (never set true) */}
+                  <Text color={theme.muted}>{TERMUX_WAKE_LOCK_HINT}</Text>
                 </>
               )}
             </>

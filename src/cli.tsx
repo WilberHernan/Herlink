@@ -7,7 +7,7 @@ import {parseArgs} from './lib/args.js'
 import {readClipboard} from './lib/clipboard.js'
 import {isProbablyUrl} from './lib/platforms.js'
 import {runScriptable} from './lib/queue.js'
-import {resolveOutDir} from './lib/termux.js'
+import {acquireWakeLock, isTermux, releaseWakeLock, resolveOutDir} from './lib/termux.js'
 import {effectiveNoUpdate, ensureYtDlp, isBundledBinary, maybeSelfUpdate} from './lib/ytdlp.js'
 
 // read at runtime from the shipped package.json so npm version bumps
@@ -36,7 +36,14 @@ const HELP = `
     --cookies <archivo>  cookies Netscape para sitios que piden sesión
     --subs [idiomas]  baja subtítulos (--subs=es,en; vacío = todos)
     --embed-metadata  incrusta título, miniatura y metadatos (requiere ffmpeg)
+    --no-embed-metadata  no incrustar metadata ni carátula (activo por defecto)
     --no-update       no auto-actualizar yt-dlp en esta ejecución
+    --retries <n>     reintentos de descarga (def. 10)
+    --fragment-retries <n>  reintentos de fragmentos (def. 10)
+    --retry-sleep <val>     espera entre reintentos (def. 1, ej. fragment:exp=1:20)
+    --socket-timeout <n>    timeout de socket en segundos (def. 30)
+    --download-archive <archivo>  archivo de registro para evitar re-descargas (def. ~/.herlink/archive.txt)
+    --break-on-existing     detiene la cola si el archivo ya existe en el archive (requiere --download-archive)
     --file <archivo>  lee urls desde un archivo (una por línea)
     -h, --help        muestra esta ayuda
     -v, --version     muestra la versión
@@ -78,6 +85,7 @@ if (args.scriptable && !isTTY) {
       await maybeSelfUpdate(ytdlp, status => process.stderr.write(status + '\n'))
     }
     const outDir = args.outDir ?? (await resolveOutDir()).dir
+    const wakelock = isTermux() ? acquireWakeLock() : false
     const outcome = await runScriptable(
       ytdlp,
       args.urls.map(url => ({url})),
@@ -87,8 +95,15 @@ if (args.scriptable && !isTTY) {
         embedMetadata: args.embedMetadata,
         subs: args.subs,
         noUpdate,
+        retries: args.retries,
+        fragmentRetries: args.fragmentRetries,
+        retrySleep: args.retrySleep,
+        socketTimeout: args.socketTimeout,
+        downloadArchive: args.downloadArchive,
+        breakOnExisting: args.breakOnExisting,
       },
     )
+    if (wakelock) releaseWakeLock()
     // runScriptable already printed filepaths (stdout) and errors (stderr)
     process.exit(outcome.errors.length > 0 || outcome.cancelled ? 1 : 0)
   } catch (error) {
@@ -135,6 +150,12 @@ const {waitUntilExit} = render(
     embedMetadata={args.embedMetadata}
     subs={args.subs}
     noUpdate={args.noUpdate}
+    retries={args.retries}
+    fragmentRetries={args.fragmentRetries}
+    retrySleep={args.retrySleep}
+    socketTimeout={args.socketTimeout}
+    downloadArchive={args.downloadArchive}
+    breakOnExisting={args.breakOnExisting}
     onOutcome={result => (outcome = result)}
   />,
   // keep a copy of every frame so clicks can be hit-tested against it
