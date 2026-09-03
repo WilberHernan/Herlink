@@ -542,6 +542,71 @@ test('runScriptable threads resume, cookies, embedMetadata and subs into the que
   }
 })
 
+test('runQueue threads retries/retrySleep/socketTimeout/archive/breakOnExisting into probe and download (P1 wiring)', async () => {
+  let seenProbeExtra: unknown
+  let seenDownload: DownloadArgs | undefined
+  const outcome = await runQueue(
+    [{url: 'https://example.com/v'}],
+    {
+      ytdlp: 'yt-dlp',
+      outDir: '/tmp/Downloads',
+      ffmpeg: {available: false},
+      retries: 5,
+      fragmentRetries: 7,
+      retrySleep: 'fragment:exp=1:20',
+      socketTimeout: 15,
+      downloadArchive: '/tmp/a.txt',
+      breakOnExisting: true,
+      choiceFor: () => choice,
+    },
+    {
+      probe: async (_ytdlp, _url, _signal, _cookies, _noUpdate, extra) => {
+        seenProbeExtra = extra
+        return {info: info(), infoJsonPath: '/tmp/info.json'}
+      },
+      download: async (opts: DownloadArgs & {ytdlp: string}) => {
+        seenDownload = opts
+        return '/tmp/Downloads/video.mp4'
+      },
+    },
+  )
+  assert.equal(outcome.filepaths.length, 1)
+  const extra = seenProbeExtra as {retries:number; fragmentRetries:number; retrySleep:string; socketTimeout:number; downloadArchive:string; breakOnExisting:boolean}
+  assert.equal(extra.retries, 5)
+  assert.equal(extra.fragmentRetries, 7)
+  assert.equal(extra.retrySleep, 'fragment:exp=1:20')
+  assert.equal(extra.socketTimeout, 15)
+  assert.equal(extra.downloadArchive, '/tmp/a.txt')
+  assert.equal(extra.breakOnExisting, true)
+  assert.equal(seenDownload?.retries, 5)
+  assert.equal(seenDownload?.fragmentRetries, 7)
+  assert.equal(seenDownload?.retrySleep, 'fragment:exp=1:20')
+  assert.equal(seenDownload?.socketTimeout, 15)
+  assert.equal(seenDownload?.downloadArchive, '/tmp/a.txt')
+  assert.equal(seenDownload?.breakOnExisting, true)
+  // verify ytdlp argv actually contains custom values
+  const {buildDownloadArgs} = await import('./ytdlp.js')
+  const argv = buildDownloadArgs(seenDownload as DownloadArgs)
+  assert.equal(argv[argv.indexOf('--retries') + 1], '5')
+  assert.equal(argv[argv.indexOf('--fragment-retries') + 1], '7')
+  assert.equal(argv[argv.indexOf('--retry-sleep') + 1], 'fragment:exp=1:20')
+  assert.equal(argv[argv.indexOf('--socket-timeout') + 1], '15')
+  assert.equal(argv[argv.indexOf('--download-archive') + 1], '/tmp/a.txt')
+  assert.ok(argv.includes('--break-on-existing'))
+})
+
+test('buildDownloadArgs guards --break-on-existing without archive (P2)', async () => {
+  const {buildDownloadArgs} = await import('./ytdlp.js')
+  const argv = buildDownloadArgs({
+    url: 'https://example.com/v',
+    choice,
+    outDir: '/tmp/Downloads',
+    ffmpeg: {available: false},
+    breakOnExisting: true,
+  } as DownloadArgs)
+  assert.ok(!argv.includes('--break-on-existing'), 'breakOnExisting without archive must not emit flag')
+})
+
 // ── parallelQueue driver (T3a: cap-3 FIFO pool, per-item abort, cancelAll) ──
 
 const pqChoice: DownloadChoice = {label: '1080p · mp4', kind: 'video', args: ['-f', 'bv*+ba/b']}

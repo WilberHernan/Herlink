@@ -1,6 +1,15 @@
 import fs from 'node:fs/promises'
 import {isThemeMode, type ThemeMode} from '../theme.js'
+import {
+  DEFAULT_FRAGMENT_RETRIES,
+  DEFAULT_RETRIES,
+  DEFAULT_RETRY_SLEEP,
+  DEFAULT_SOCKET_TIMEOUT,
+  defaultArchivePath,
+} from './constants.js'
 import {isProbablyUrl} from './platforms.js'
+
+export {DEFAULT_FRAGMENT_RETRIES, DEFAULT_RETRIES, DEFAULT_RETRY_SLEEP, DEFAULT_SOCKET_TIMEOUT, defaultArchivePath}
 
 export type CliArgs = {
   help: boolean
@@ -16,9 +25,33 @@ export type CliArgs = {
   noUpdate: boolean
   file?: string
   error?: string
+  // P0-1: robust retries (REQ-022 supplement) — defaults mirror yt-dlp hardening
+  retries: number
+  fragmentRetries: number
+  retrySleep: string
+  socketTimeout: number
+  // P0-2: yt-dlp --download-archive passthrough — avoids re-downloading playlist entries
+  downloadArchive?: string
+  breakOnExisting: boolean
 }
 
 // async on purpose: --file/--cookies need file reads at parse time (D1)
+function parsePositiveInt(value: string | undefined, flag: string): number | string {
+  if (value === undefined || value === '') return `${flag} necesita un valor numérico`
+  // allow only non-negative integers
+  if (!/^\d+$/.test(value)) return `${flag} necesita un entero no negativo (recibido “${value}”)`
+  const n = Number(value)
+  if (!Number.isFinite(n)) return `${flag} necesita un entero no negativo (recibido “${value}”)`
+  return n
+}
+
+function parseRetrySleep(value: string | undefined): string | string {
+  if (value === undefined || value === '') return '--retry-sleep necesita un valor (ej. 1 o fragment:exp=1:20)'
+  // yt-dlp accepts: <number> or <type>:<strategy>=<n>:<n> etc. We accept any non-empty without spaces/leading dash.
+  if (value.startsWith('-')) return `--retry-sleep valor inválido “${value}”`
+  return value
+}
+
 export async function parseArgs(args: string[]): Promise<CliArgs> {
   const result: CliArgs = {
     help: false,
@@ -27,6 +60,11 @@ export async function parseArgs(args: string[]): Promise<CliArgs> {
     embedMetadata: true, // default on: embed metadata + cover art; --no-embed-metadata escapes
     resume: false,
     noUpdate: false,
+    retries: DEFAULT_RETRIES,
+    fragmentRetries: DEFAULT_FRAGMENT_RETRIES,
+    retrySleep: DEFAULT_RETRY_SLEEP,
+    socketTimeout: DEFAULT_SOCKET_TIMEOUT,
+    breakOnExisting: false,
   }
   let noEmbed = false // --no-embed-metadata wins regardless of order (D3)
 
@@ -78,6 +116,53 @@ export async function parseArgs(args: string[]): Promise<CliArgs> {
       result.resume = true
     } else if (arg === '--no-update') {
       result.noUpdate = true
+    } else if (arg === '--retries' || arg === '--fragment-retries' || arg === '--socket-timeout') {
+      const value = args[++index]
+      const flag = arg
+      const parsed = parsePositiveInt(value, flag)
+      if (typeof parsed === 'string') return {...result, error: parsed}
+      if (flag === '--retries') result.retries = parsed
+      else if (flag === '--fragment-retries') result.fragmentRetries = parsed
+      else result.socketTimeout = parsed
+    } else if (arg.startsWith('--retries=')) {
+      const value = arg.slice('--retries='.length)
+      const parsed = parsePositiveInt(value, '--retries')
+      if (typeof parsed === 'string') return {...result, error: parsed}
+      result.retries = parsed
+    } else if (arg.startsWith('--fragment-retries=')) {
+      const value = arg.slice('--fragment-retries='.length)
+      const parsed = parsePositiveInt(value, '--fragment-retries')
+      if (typeof parsed === 'string') return {...result, error: parsed}
+      result.fragmentRetries = parsed
+    } else if (arg.startsWith('--socket-timeout=')) {
+      const value = arg.slice('--socket-timeout='.length)
+      const parsed = parsePositiveInt(value, '--socket-timeout')
+      if (typeof parsed === 'string') return {...result, error: parsed}
+      result.socketTimeout = parsed
+    } else if (arg === '--retry-sleep') {
+      const value = args[++index]
+      const parsed = parseRetrySleep(value)
+      if (parsed.startsWith('--retry-sleep')) return {...result, error: parsed}
+      result.retrySleep = parsed
+    } else if (arg.startsWith('--retry-sleep=')) {
+      const value = arg.slice('--retry-sleep='.length)
+      const parsed = parseRetrySleep(value)
+      if (parsed.startsWith('--retry-sleep')) return {...result, error: parsed}
+      result.retrySleep = parsed
+    } else if (arg === '--download-archive') {
+      const next = args[index + 1]
+      if (next && !next.startsWith('-') && !isProbablyUrl(next)) {
+        result.downloadArchive = next
+        index++
+      } else {
+        result.downloadArchive = defaultArchivePath()
+      }
+    } else if (arg.startsWith('--download-archive=')) {
+      const value = arg.slice('--download-archive='.length)
+      if (!value) return {...result, error: '--download-archive necesita un valor'}
+      result.downloadArchive = value
+    } else if (arg === '--break-on-existing') {
+      result.breakOnExisting = true
     } else if (arg.startsWith('-')) {
       return {...result, error: `Opción desconocida “${arg}”`}
     } else if (isProbablyUrl(arg)) {

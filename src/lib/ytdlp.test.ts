@@ -306,6 +306,14 @@ test('buildDownloadArgs() on desktop is unchanged (no --restrict-filenames)', ()
       '1',
       '--extractor-retries',
       '3',
+      '--retries',
+      '10',
+      '--fragment-retries',
+      '10',
+      '--retry-sleep',
+      '1',
+      '--socket-timeout',
+      '30',
       '--no-playlist',
       '--no-warnings',
       '--newline',
@@ -347,6 +355,14 @@ test('buildDownloadArgs() adds --continue after the choice args when resume is s
       '1',
       '--extractor-retries',
       '3',
+      '--retries',
+      '10',
+      '--fragment-retries',
+      '10',
+      '--retry-sleep',
+      '1',
+      '--socket-timeout',
+      '30',
       '--no-playlist',
       '--no-warnings',
       '--newline',
@@ -389,6 +405,14 @@ test('buildDownloadArgs() inserts --cookies right after the url when cookies are
       '1',
       '--extractor-retries',
       '3',
+      '--retries',
+      '10',
+      '--fragment-retries',
+      '10',
+      '--retry-sleep',
+      '1',
+      '--socket-timeout',
+      '30',
       '--no-playlist',
       '--no-warnings',
       '--newline',
@@ -513,6 +537,14 @@ const DESKTOP_TAIL = [
   '1',
   '--extractor-retries',
   '3',
+  '--retries',
+  '10',
+  '--fragment-retries',
+  '10',
+  '--retry-sleep',
+  '1',
+  '--socket-timeout',
+  '30',
   '--no-playlist',
   '--no-warnings',
   '--newline',
@@ -771,6 +803,14 @@ test('buildDownloadArgs() with a playlistIndex pins --playlist-start/end and omi
       '1',
       '--extractor-retries',
       '3',
+      '--retries',
+      '10',
+      '--fragment-retries',
+      '10',
+      '--retry-sleep',
+      '1',
+      '--socket-timeout',
+      '30',
       '--playlist-start',
       '2',
       '--playlist-end',
@@ -805,6 +845,14 @@ test('buildDownloadArgs() in playlist mode without an index downloads the whole 
       '1',
       '--extractor-retries',
       '3',
+      '--retries',
+      '10',
+      '--fragment-retries',
+      '10',
+      '--retry-sleep',
+      '1',
+      '--socket-timeout',
+      '30',
       ...DESKTOP_TAIL.slice(DESKTOP_TAIL.indexOf('--no-warnings')),
     ])
   } finally {
@@ -1007,6 +1055,14 @@ test('buildDownloadArgs() adds --no-update after the choice args when requested 
       '1',
       '--extractor-retries',
       '3',
+      '--retries',
+      '10',
+      '--fragment-retries',
+      '10',
+      '--retry-sleep',
+      '1',
+      '--socket-timeout',
+      '30',
       ...DESKTOP_TAIL.slice(DESKTOP_TAIL.indexOf('--no-playlist')),
     ])
   } finally {
@@ -1143,3 +1199,138 @@ test('probe() writes a nonced tmpfile so two same-ms probes never collide (REQ-p
     fs.rmSync(bin, {recursive: true, force: true})
   }
 })
+test('buildDownloadArgs() includes hardened retry defaults --retries 10 --fragment-retries 10 --retry-sleep 1 --socket-timeout 30 (P0-1)', () => {
+  const restoreTermux = termuxEnv(false)
+  try {
+    const args = buildDownloadArgs({
+      url: 'https://example.com/v',
+      choice,
+      outDir: path.join(os.homedir(), 'Downloads'),
+      ffmpeg: {available: false},
+    })
+    assert.equal(args[args.indexOf('--retries') + 1], '10')
+    assert.equal(args[args.indexOf('--fragment-retries') + 1], '10')
+    assert.equal(args[args.indexOf('--retry-sleep') + 1], '1')
+    assert.equal(args[args.indexOf('--socket-timeout') + 1], '30')
+    // order: sleep-requests -> extractor-retries -> retries -> fragment-retries -> retry-sleep -> socket-timeout
+    const sleepIdx = args.indexOf('--sleep-requests')
+    const extrIdx = args.indexOf('--extractor-retries')
+    const retriesIdx = args.indexOf('--retries')
+    const fragIdx = args.indexOf('--fragment-retries')
+    const rsIdx = args.indexOf('--retry-sleep')
+    const sockIdx = args.indexOf('--socket-timeout')
+    assert.ok(sleepIdx < extrIdx && extrIdx < retriesIdx && retriesIdx < fragIdx && fragIdx < rsIdx && rsIdx < sockIdx)
+  } finally {
+    restoreTermux()
+  }
+})
+
+test('buildDownloadArgs() respects custom retry values and fragment:exp retry-sleep', () => {
+  const restoreTermux = termuxEnv(false)
+  try {
+    const args = buildDownloadArgs({
+      url: 'https://example.com/v',
+      choice,
+      outDir: path.join(os.homedir(), 'Downloads'),
+      ffmpeg: {available: false},
+      retries: 5,
+      fragmentRetries: 7,
+      retrySleep: 'fragment:exp=1:20',
+      socketTimeout: 60,
+    })
+    assert.equal(args[args.indexOf('--retries') + 1], '5')
+    assert.equal(args[args.indexOf('--fragment-retries') + 1], '7')
+    assert.equal(args[args.indexOf('--retry-sleep') + 1], 'fragment:exp=1:20')
+    assert.equal(args[args.indexOf('--socket-timeout') + 1], '60')
+  } finally {
+    restoreTermux()
+  }
+})
+
+test('buildDownloadArgs() adds --download-archive and --break-on-existing when set (P0-2)', () => {
+  const restoreTermux = termuxEnv(false)
+  try {
+    const args = buildDownloadArgs({
+      url: 'https://example.com/v',
+      choice,
+      outDir: path.join(os.homedir(), 'Downloads'),
+      ffmpeg: {available: false},
+      downloadArchive: '/tmp/archive.txt',
+      breakOnExisting: true,
+    })
+    assert.equal(args[args.indexOf('--download-archive') + 1], '/tmp/archive.txt')
+    assert.ok(args.includes('--break-on-existing'))
+    // archive/break land after socket-timeout but before --no-playlist
+    const sockIdx = args.indexOf('--socket-timeout')
+    const archIdx = args.indexOf('--download-archive')
+    const breakIdx = args.indexOf('--break-on-existing')
+    const playlistIdx = args.indexOf('--no-playlist')
+    assert.ok(sockIdx < archIdx && archIdx < breakIdx && breakIdx < playlistIdx)
+  } finally {
+    restoreTermux()
+  }
+})
+
+test('buildDownloadArgs() omits --download-archive and --break-on-existing by default (P0-2)', () => {
+  const restoreTermux = termuxEnv(false)
+  try {
+    const args = buildDownloadArgs({
+      url: 'https://example.com/v',
+      choice,
+      outDir: path.join(os.homedir(), 'Downloads'),
+      ffmpeg: {available: false},
+    })
+    assert.ok(!args.includes('--download-archive'))
+    assert.ok(!args.includes('--break-on-existing'))
+  } finally {
+    restoreTermux()
+  }
+})
+
+test('probe() passes hardened retry flags and optional archive/break (P0-1/P0-2)', async () => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'herlink-bin-'))
+  const argsOut = path.join(bin, 'args.txt')
+  try {
+    fs.writeFileSync(
+      path.join(bin, 'fake-ytdlp'),
+      '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$FAKE_ARGS_OUT"\nprintf \'{"title":"fake"}\'\n',
+      {mode: 0o755},
+    )
+    const prev = process.env.FAKE_ARGS_OUT
+    process.env.FAKE_ARGS_OUT = argsOut
+    try {
+      const fake = path.join(bin, 'fake-ytdlp')
+      // default retries
+      const r1 = await probe(fake, 'https://example.com/v')
+      let argv = fs.readFileSync(argsOut, 'utf8').trim().split('\n')
+      assert.equal(argv[argv.indexOf('--retries') + 1], '10')
+      assert.equal(argv[argv.indexOf('--fragment-retries') + 1], '10')
+      assert.equal(argv[argv.indexOf('--retry-sleep') + 1], '1')
+      assert.equal(argv[argv.indexOf('--socket-timeout') + 1], '30')
+      await fs.promises.rm(r1.infoJsonPath, {force: true})
+      // custom + archive + break
+      const r2 = await probe(fake, 'https://example.com/v', undefined, undefined, false, {
+        retries: 5,
+        fragmentRetries: 7,
+        retrySleep: 'fragment:exp=1:20',
+        socketTimeout: 60,
+        downloadArchive: '/tmp/archive.txt',
+        breakOnExisting: true,
+      })
+      argv = fs.readFileSync(argsOut, 'utf8').trim().split('\n')
+      assert.equal(argv[argv.indexOf('--retries') + 1], '5')
+      assert.equal(argv[argv.indexOf('--fragment-retries') + 1], '7')
+      assert.equal(argv[argv.indexOf('--retry-sleep') + 1], 'fragment:exp=1:20')
+      assert.equal(argv[argv.indexOf('--socket-timeout') + 1], '60')
+      assert.equal(argv[argv.indexOf('--download-archive') + 1], '/tmp/archive.txt')
+      assert.ok(argv.includes('--break-on-existing'))
+      await fs.promises.rm(r2.infoJsonPath, {force: true})
+    } finally {
+      if (prev === undefined) delete process.env.FAKE_ARGS_OUT
+      else process.env.FAKE_ARGS_OUT = prev
+    }
+  } finally {
+    fs.rmSync(bin, {recursive: true, force: true})
+  }
+})
+

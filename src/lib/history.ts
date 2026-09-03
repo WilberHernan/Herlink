@@ -1,9 +1,22 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import {defaultArchivePath} from './constants.js'
+
+export {defaultArchivePath} from './constants.js'
 
 const HISTORY_FILE = path.join(os.homedir(), '.config', 'herlink', 'history.json')
 const LIMIT = 50
+
+/**
+ * P0-2 archive note:
+ * UI history (history.json) keeps the last 50 URLs for quick recall (↑).
+ * Download deduplication for playlists is handled by yt-dlp's --download-archive
+ * (archive.txt with "extractor id" lines). history.ts does NOT duplicate that
+ * logic — the archive file is passed straight to yt-dlp via buildDownloadArgs().
+ * Use defaultArchivePath() when the user passes --download-archive without a value.
+ */
+export const ARCHIVE_FILE = defaultArchivePath()
 
 export function loadHistory(): string[] {
   try {

@@ -46,6 +46,12 @@ export type QueueRunOptions = {
   subs?: string
   /** --no-update into probe/download argv: suppress yt-dlp's stale warning (REQ-022). */
   noUpdate?: boolean
+  retries?: number
+  fragmentRetries?: number
+  retrySleep?: string
+  socketTimeout?: number
+  downloadArchive?: string
+  breakOnExisting?: boolean
   // TTY defers to the picker (async promise resolved on select), scriptable
   // resolves immediately; 'playlist' takes the "descargar los N videos"
   // choice (REQ-018) and 'cancel' aborts the queue
@@ -106,7 +112,14 @@ export async function runItem(
   }
   let info: VideoInfo
   try {
-    const result = await doProbe(opts.ytdlp, item.url, signal, opts.cookies, opts.noUpdate)
+    const result = await doProbe(opts.ytdlp, item.url, signal, opts.cookies, opts.noUpdate, {
+      retries: opts.retries,
+      fragmentRetries: opts.fragmentRetries,
+      retrySleep: opts.retrySleep,
+      socketTimeout: opts.socketTimeout,
+      downloadArchive: opts.downloadArchive,
+      breakOnExisting: opts.breakOnExisting,
+    })
     info = result.info
   } catch (error) {
     if (signal?.aborted) {
@@ -157,6 +170,12 @@ export async function runItem(
       embedMetadata: opts.embedMetadata,
       subs: opts.subs,
       noUpdate: opts.noUpdate,
+      retries: opts.retries,
+      fragmentRetries: opts.fragmentRetries,
+      retrySleep: opts.retrySleep,
+      socketTimeout: opts.socketTimeout,
+      downloadArchive: opts.downloadArchive,
+      breakOnExisting: opts.breakOnExisting,
     }
     if (typeof count === 'number' && count > 0) {
       for (let i = 1; i <= count; i++) {
@@ -201,6 +220,12 @@ export async function runItem(
     embedMetadata: opts.embedMetadata,
     subs: opts.subs,
     noUpdate: opts.noUpdate,
+    retries: opts.retries,
+    fragmentRetries: opts.fragmentRetries,
+    retrySleep: opts.retrySleep,
+    socketTimeout: opts.socketTimeout,
+    downloadArchive: opts.downloadArchive,
+    breakOnExisting: opts.breakOnExisting,
   }
   try {
     // always re-extract — probe's infoJsonPath URLs expire before download starts
@@ -328,6 +353,12 @@ export type ParallelQueueOptions = {
   embedMetadata?: boolean
   subs?: string
   noUpdate?: boolean
+  retries?: number
+  fragmentRetries?: number
+  retrySleep?: string
+  socketTimeout?: number
+  downloadArchive?: string
+  breakOnExisting?: boolean
   /** Max concurrent tasks, default 3 (REQ-par-002, D-P1). */
   cap?: number
   /** 'cancel' cancels only this item — siblings' signals stay untouched (REQ-par-003). */
@@ -389,6 +420,12 @@ export function createParallelQueue(opts: ParallelQueueOptions): ParallelQueue {
     embedMetadata: opts.embedMetadata,
     subs: opts.subs,
     noUpdate: opts.noUpdate,
+    retries: opts.retries,
+    fragmentRetries: opts.fragmentRetries,
+    retrySleep: opts.retrySleep,
+    socketTimeout: opts.socketTimeout,
+    downloadArchive: opts.downloadArchive,
+    breakOnExisting: opts.breakOnExisting,
   }
 
   function itemHooks(itemId: string): ItemHooks {
@@ -503,6 +540,12 @@ export type ScriptableOptions = {
   subs?: string
   /** --no-update into probe/download argv (REQ-022). */
   noUpdate?: boolean
+  retries?: number
+  fragmentRetries?: number
+  retrySleep?: string
+  socketTimeout?: number
+  downloadArchive?: string
+  breakOnExisting?: boolean
   signal?: AbortSignal
 }
 
@@ -532,6 +575,12 @@ export async function runScriptable(
       embedMetadata: opts.embedMetadata,
       subs: opts.subs,
       noUpdate: opts.noUpdate,
+      retries: opts.retries,
+      fragmentRetries: opts.fragmentRetries,
+      retrySleep: opts.retrySleep,
+      socketTimeout: opts.socketTimeout,
+      downloadArchive: opts.downloadArchive,
+      breakOnExisting: opts.breakOnExisting,
       signal: opts.signal,
       choiceFor: info => (opts.scriptable === 'mp3' ? audioChoice(info) : bestChoice(info)),
       onStatus: message => process.stderr.write(message + '\n'),

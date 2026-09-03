@@ -15,6 +15,11 @@ test('parses a url and a spaced theme option without confusing the value for the
     embedMetadata: true,
     resume: false,
     noUpdate: false,
+    retries: 10,
+    fragmentRetries: 10,
+    retrySleep: '1',
+    socketTimeout: 30,
+    breakOnExisting: false,
   })
 })
 
@@ -27,6 +32,11 @@ test('parses an equals-style theme option after the url', async () => {
     embedMetadata: true,
     resume: false,
     noUpdate: false,
+    retries: 10,
+    fragmentRetries: 10,
+    retrySleep: '1',
+    socketTimeout: 30,
+    breakOnExisting: false,
   })
 })
 
@@ -38,6 +48,11 @@ test('collects multiple positional urls in order', async () => {
     embedMetadata: true,
     resume: false,
     noUpdate: false,
+    retries: 10,
+    fragmentRetries: 10,
+    retrySleep: '1',
+    socketTimeout: 30,
+    breakOnExisting: false,
   })
 })
 
@@ -222,3 +237,65 @@ test('auto resolves to the warm palette while light and dark stay explicit', () 
   assert.equal(themeFor('dark').background, '#000000')
   assert.equal(themeFor('dark').primary, '#e8e8e8')
 })
+test('--retries and --fragment-retries parse with defaults and custom values', async () => {
+  const defaults = await parseArgs(['https://example.com/v'])
+  assert.equal(defaults.retries, 10)
+  assert.equal(defaults.fragmentRetries, 10)
+  assert.equal(defaults.retrySleep, '1')
+  assert.equal(defaults.socketTimeout, 30)
+  const custom = await parseArgs(['--retries', '5', '--fragment-retries', '7', 'https://example.com/v'])
+  assert.equal(custom.error, undefined)
+  assert.equal(custom.retries, 5)
+  assert.equal(custom.fragmentRetries, 7)
+  const equals = await parseArgs(['--retries=15', '--fragment-retries=20', 'https://example.com/v'])
+  assert.equal(equals.retries, 15)
+  assert.equal(equals.fragmentRetries, 20)
+})
+
+test('--retries validates non-negative integers', async () => {
+  assert.match((await parseArgs(['--retries', 'abc', 'https://example.com/v'])).error ?? '', /entero no negativo/)
+  assert.match((await parseArgs(['--retries', '-1', 'https://example.com/v'])).error ?? '', /entero no negativo/)
+  assert.match((await parseArgs(['--retries'])).error ?? '', /necesita un valor/)
+  assert.match((await parseArgs(['--retries=', 'https://example.com/v'])).error ?? '', /necesita un valor/)
+  assert.match((await parseArgs(['--socket-timeout', 'x', 'https://example.com/v'])).error ?? '', /entero no negativo/)
+})
+
+test('--retry-sleep parses number and fragment:exp forms', async () => {
+  const simple = await parseArgs(['--retry-sleep', '1', 'https://example.com/v'])
+  assert.equal(simple.retrySleep, '1')
+  const exp = await parseArgs(['--retry-sleep', 'fragment:exp=1:20', 'https://example.com/v'])
+  assert.equal(exp.retrySleep, 'fragment:exp=1:20')
+  const equals = await parseArgs(['--retry-sleep=fragment:exp=1:20', 'https://example.com/v'])
+  assert.equal(equals.retrySleep, 'fragment:exp=1:20')
+  assert.match((await parseArgs(['--retry-sleep'])).error ?? '', /necesita un valor/)
+})
+
+test('--socket-timeout parses custom value', async () => {
+  const r = await parseArgs(['--socket-timeout', '60', 'https://example.com/v'])
+  assert.equal(r.socketTimeout, 60)
+  const eq = await parseArgs(['--socket-timeout=45', 'https://example.com/v'])
+  assert.equal(eq.socketTimeout, 45)
+})
+
+test('--download-archive defaults to ~/.herlink/archive.txt when flag has no value', async () => {
+  const r = await parseArgs(['--download-archive', 'https://example.com/v'])
+  assert.equal(r.error, undefined)
+  assert.ok(r.downloadArchive?.endsWith(path.join('.herlink', 'archive.txt')))
+  // with explicit path
+  const explicit = await parseArgs(['--download-archive', '/tmp/my-archive.txt', 'https://example.com/v'])
+  assert.equal(explicit.downloadArchive, '/tmp/my-archive.txt')
+  const equalsForm = await parseArgs(['--download-archive=/tmp/a.txt', 'https://example.com/v'])
+  assert.equal(equalsForm.downloadArchive, '/tmp/a.txt')
+  // followed by another flag should still default
+  const flagNext = await parseArgs(['--download-archive', '--best', 'https://example.com/v'])
+  assert.ok(flagNext.downloadArchive?.endsWith('archive.txt'))
+  assert.equal(flagNext.scriptable, 'best')
+})
+
+test('--break-on-existing sets the flag', async () => {
+  const r = await parseArgs(['--break-on-existing', 'https://example.com/v'])
+  assert.equal(r.breakOnExisting, true)
+  const def = await parseArgs(['https://example.com/v'])
+  assert.equal(def.breakOnExisting, false)
+})
+

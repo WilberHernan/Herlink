@@ -232,6 +232,25 @@ type RawFormat = {
   filesize_approx?: number
 }
 
+import {
+  DEFAULT_FRAGMENT_RETRIES,
+  DEFAULT_RETRIES,
+  DEFAULT_RETRY_SLEEP,
+  DEFAULT_SOCKET_TIMEOUT,
+  defaultArchivePath,
+} from './constants.js'
+
+export {DEFAULT_FRAGMENT_RETRIES, DEFAULT_RETRIES, DEFAULT_RETRY_SLEEP, DEFAULT_SOCKET_TIMEOUT, defaultArchivePath}
+
+export type ProbeExtra = {
+  retries?: number
+  fragmentRetries?: number
+  retrySleep?: string
+  socketTimeout?: number
+  downloadArchive?: string
+  breakOnExisting?: boolean
+}
+
 export type ProbeResult = {
   info: VideoInfo
   /** Raw -J output saved to disk so downloads can skip re-extraction via --load-info-json. */
@@ -244,10 +263,18 @@ export async function probe(
   signal?: AbortSignal,
   cookies?: string,
   noUpdate?: boolean,
+  extra?: ProbeExtra,
 ): Promise<ProbeResult> {
   const argv = ['-J', '--no-playlist', '--no-warnings', '--compat-options', 'manifest-filesize-approx']
   if (cookies) argv.push('--cookies', cookies)
   if (noUpdate) argv.push('--no-update')
+  // P0-1: robust retries for probe as well (403/transient network) — mirrors download hardening
+  argv.push('--retries', String(extra?.retries ?? DEFAULT_RETRIES))
+  argv.push('--fragment-retries', String(extra?.fragmentRetries ?? DEFAULT_FRAGMENT_RETRIES))
+  argv.push('--retry-sleep', extra?.retrySleep ?? DEFAULT_RETRY_SLEEP)
+  argv.push('--socket-timeout', String(extra?.socketTimeout ?? DEFAULT_SOCKET_TIMEOUT))
+  if (extra?.downloadArchive) argv.push('--download-archive', extra.downloadArchive)
+  if (extra?.breakOnExisting && extra?.downloadArchive) argv.push('--break-on-existing')
   argv.push(url)
   const stdout = await new Promise<string>((resolve, reject) => {
     const child = spawn(ytdlp, argv, {signal})
@@ -460,6 +487,14 @@ export type DownloadArgs = {
   /** --no-update: suppress yt-dlp's 90-day stale warning when herlink manages
    * freshness or the user asked for it (REQ-022). */
   noUpdate?: boolean
+  /** P0-1: hardened retries — defaults 10/10/1/30 mitigate YouTube 403 transient failures */
+  retries?: number
+  fragmentRetries?: number
+  retrySleep?: string
+  socketTimeout?: number
+  /** P0-2: yt-dlp archive — prevents re-downloading playlist entries already fetched */
+  downloadArchive?: string
+  breakOnExisting?: boolean
 }
 
 // pure aside from a call-time env read, so the Termux/desktop argument sets
@@ -484,6 +519,18 @@ export function buildDownloadArgs(opts: DownloadArgs): string[] {
     // Retry up to 3 times on extractor failures (transient errors, rate limits)
     '--extractor-retries',
     '3',
+    // P0-1: hardened download retries — 403 mitigation (YouTube #14087 etc)
+    '--retries',
+    String(opts.retries ?? DEFAULT_RETRIES),
+    '--fragment-retries',
+    String(opts.fragmentRetries ?? DEFAULT_FRAGMENT_RETRIES),
+    '--retry-sleep',
+    opts.retrySleep ?? DEFAULT_RETRY_SLEEP,
+    '--socket-timeout',
+    String(opts.socketTimeout ?? DEFAULT_SOCKET_TIMEOUT),
+    // P0-2: archive — skip already-downloaded entries; break-on-existing fast-path
+    ...(opts.downloadArchive ? ['--download-archive', opts.downloadArchive] : []),
+    ...(opts.breakOnExisting && opts.downloadArchive ? ['--break-on-existing'] : []),
     // playlist: per-entry window replaces --no-playlist (D8); unknown-count
     // single run drops --no-playlist entirely (D13)
     ...(opts.playlistIndex
