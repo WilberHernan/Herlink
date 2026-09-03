@@ -21,7 +21,7 @@ export type CliArgs = {
   cookies?: string // Netscape file; missing/unreadable = parse error (checked in T3)
   subs?: string // '' = all langs
   embedMetadata: boolean // resolved: --no-embed-metadata wins
-  resume: boolean // --continue (opt-in, per REQ-005)
+  resume: boolean // --continue default ON (yt-dlp man), --no-continue disables
   noUpdate: boolean
   file?: string
   error?: string
@@ -58,7 +58,7 @@ export async function parseArgs(args: string[]): Promise<CliArgs> {
     version: false,
     urls: [],
     embedMetadata: true, // default on: embed metadata + cover art; --no-embed-metadata escapes
-    resume: false,
+    resume: true, // default ON like yt-dlp --continue, --no-continue disables
     noUpdate: false,
     retries: DEFAULT_RETRIES,
     fragmentRetries: DEFAULT_FRAGMENT_RETRIES,
@@ -114,6 +114,8 @@ export async function parseArgs(args: string[]): Promise<CliArgs> {
       result.embedMetadata = false
     } else if (arg === '--continue') {
       result.resume = true
+    } else if (arg === '--no-continue') {
+      result.resume = false
     } else if (arg === '--no-update') {
       result.noUpdate = true
     } else if (arg === '--retries' || arg === '--fragment-retries' || arg === '--socket-timeout') {

@@ -301,6 +301,7 @@ test('buildDownloadArgs() on desktop is unchanged (no --restrict-filenames)', ()
       'https://example.com/v',
       '-f',
       'bv*+ba/b',
+      '--continue',
       // Rate limiting and retry for reliability
       '--sleep-requests',
       '1',
@@ -400,6 +401,7 @@ test('buildDownloadArgs() inserts --cookies right after the url when cookies are
       '/tmp/cookies.txt',
       '-f',
       'bv*+ba/b',
+      '--continue',
       // Rate limiting and retry for reliability
       '--sleep-requests',
       '1',
@@ -577,6 +579,7 @@ test('buildDownloadArgs() embeds metadata + thumbnail with ffmpeg and passes --f
       'https://example.com/v',
       '-f',
       'bv*+ba/b',
+      '--continue',
       '--embed-metadata',
       '--embed-thumbnail',
       ...DESKTOP_TAIL,
@@ -647,6 +650,7 @@ test('buildDownloadArgs() writes --write-subs --sub-langs and --embed-subs with 
       'https://example.com/v',
       '-f',
       'bv*+ba/b',
+      '--continue',
       '--write-subs',
       '--sub-langs',
       'es,en',
@@ -798,6 +802,7 @@ test('buildDownloadArgs() with a playlistIndex pins --playlist-start/end and omi
       'https://example.com/pl',
       '-f',
       'bv*+ba/b',
+      '--continue',
       // Rate limiting and retry for reliability
       '--sleep-requests',
       '1',
@@ -840,6 +845,7 @@ test('buildDownloadArgs() in playlist mode without an index downloads the whole 
       'https://example.com/pl',
       '-f',
       'bv*+ba/b',
+      '--continue',
       // Rate limiting and retry for reliability
       '--sleep-requests',
       '1',
@@ -1049,6 +1055,7 @@ test('buildDownloadArgs() adds --no-update after the choice args when requested 
       'https://example.com/v',
       '-f',
       'bv*+ba/b',
+      '--continue',
       '--no-update',
       // Rate limiting and retry for reliability
       '--sleep-requests',

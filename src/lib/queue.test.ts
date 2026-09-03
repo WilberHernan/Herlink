@@ -82,11 +82,16 @@ test('runQueue records a mid-queue failure and continues with remaining items (R
         if (opts.url.includes('b.example')) throw new Error('b roto')
         return opts.url.includes('a.example') ? 'a.mp4' : 'c.mp4'
       },
+      // keep the suite fast — backoff is covered by its own test
+      sleep: async () => {},
     },
   )
-  // b fails on both attempts (first attempt and retry)
+  // b fails 3 retries (first attempt + 3 retries) before the error is recorded;
+  // a and c succeed exactly once each
   assert.deepEqual(downloads, [
     'https://a.example/v',
+    'https://b.example/v',
+    'https://b.example/v',
     'https://b.example/v',
     'https://b.example/v',
     'https://c.example/v',
@@ -214,6 +219,8 @@ test('runQueue retries on transient download error', async () => {
         if (downloads === 1) throw new Error('transient network error')
         return '/tmp/Downloads/video.mp4'
       },
+      // no-op backoff — the retry wait is exercised by the backoff test below
+      sleep: async () => {},
     },
   )
   assert.equal(downloads, 2)
@@ -250,6 +257,7 @@ test('runQueue falls back to audio-only once when the video stream is DRM-blocke
         }
         throw new Error('unable to download video data: HTTP Error 403: Forbidden')
       },
+      sleep: async () => {},
     },
   )
   assert.deepEqual(attempts, ['video', 'video', 'audio'], 'first attempt + retry + audio fallback')
@@ -275,12 +283,76 @@ test('runQueue does NOT fall back to audio for a non-DRM failure — the error i
       download: async () => {
         throw new Error('Some network error')
       },
+      sleep: async () => {},
     },
   )
   assert.equal(audioFallbacks, 0, 'a non-DRM failure must never trigger the fallback')
   assert.deepEqual(outcome.filepaths, [])
   assert.equal(outcome.errors.length, 1)
   assert.match(outcome.errors[0]!, /Some network error/)
+})
+
+test('runQueue applies exponential backoff before each fresh-extraction retry (P0)', async () => {
+  const waits: number[] = []
+  let downloads = 0
+  const outcome = await runQueue(
+    [{url: 'https://example.com/v'}],
+    {
+      ytdlp: 'yt-dlp',
+      outDir: '/tmp/Downloads',
+      ffmpeg: {available: false},
+      choiceFor: () => choice,
+      retryBackoffMs: 10,
+      maxRetryAttempts: 3,
+    },
+    {
+      probe: async () => ({info: info(), infoJsonPath: '/tmp/info.json'}),
+      download: async () => {
+        downloads++
+        throw new Error(`network drop ${downloads}`)
+      },
+      sleep: async (ms?: number) => {
+        waits.push(ms ?? 0)
+      },
+    },
+  )
+  // 3 retry attempts, each doubling the base 10ms wait: 10, 20, 40
+  assert.deepEqual(waits, [10, 20, 40], 'backoff must be exponential (base * 2^attempt)')
+  assert.equal(downloads, 4, 'first attempt + 3 retries when the pipe never recovers')
+  assert.equal(outcome.errors.length, 1, 'only the last error is reported')
+  assert.match(outcome.errors[0]!, /network drop 4/)
+})
+
+test('runQueue backoff recovers from a brief cut before the retries are exhausted', async () => {
+  const waits: number[] = []
+  let downloads = 0
+  const outcome = await runQueue(
+    [{url: 'https://example.com/v'}],
+    {
+      ytdlp: 'yt-dlp',
+      outDir: '/tmp/Downloads',
+      ffmpeg: {available: false},
+      choiceFor: () => choice,
+      retryBackoffMs: 10,
+      maxRetryAttempts: 3,
+    },
+    {
+      probe: async () => ({info: info(), infoJsonPath: '/tmp/info.json'}),
+      download: async () => {
+        downloads++
+        if (downloads < 3) throw new Error('transient')
+        return '/tmp/Downloads/video.mp4'
+      },
+      sleep: async (ms?: number) => {
+        waits.push(ms ?? 0)
+      },
+    },
+  )
+  // fails twice, succeeds on the 3rd attempt: waits 10ms then 20ms
+  assert.deepEqual(waits, [10, 20], 'cuts during retries still wait then succeed')
+  assert.equal(downloads, 3)
+  assert.deepEqual(outcome.filepaths, ['/tmp/Downloads/video.mp4'])
+  assert.equal(outcome.errors.length, 0)
 })
 
 test('runQueue threads item.playlistIndex into the download (D8)', async () => {
@@ -757,6 +829,8 @@ test('parallelQueue: one item failure does not cascade — siblings finish (REQ-
       if (opts.url.includes('b.example')) throw new Error('b roto')
       return opts.url.includes('a.example') ? 'a.mp4' : 'c.mp4'
     },
+    // no real backoff wait — the failing sibling retries its 3 attempts fast
+    sleep: async () => {},
   })
   queue.start({url: 'https://a.example/v'})
   queue.start({url: 'https://b.example/v'})
@@ -1167,6 +1241,8 @@ test('parallelQueue aggregates every item error, not only the first (REQ-par-016
         if (opts.url.includes('c.example')) throw new Error('c roto')
         return 'a.mp4'
       },
+      // failing siblings retry 3 unbacked attempts so errors aggregate fast
+      sleep: async () => {},
     },
     {onAllDone: done => doneCalls.push(done)},
   )

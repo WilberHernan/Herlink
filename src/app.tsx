@@ -285,6 +285,7 @@ const HINTS: Record<Screen, Array<[string, string]>> = {
   ],
   downloads: [
     ['↵', 'volver al input'],
+    ['d', 'borrar fila'],
     ['esc', 'cancelar'],
     ['^c', 'salir'],
   ],
@@ -641,6 +642,24 @@ function AppContent({
     releaseWakeLock()
   }, [])
 
+  // per-row delete (P0): drop the topmost errored row on `d`. This is a UI
+  // delete — it removes the row so it won't be retried and frees the list.
+  // The partial file stays on disk (harmless; the user can remove it manually),
+  // intentionally distinct from ESC soft-cancel, which preserves .part/.ytdl
+  // for --continue resume.
+  const deleteErrorItem = useCallback(() => {
+    setItems(prev => {
+      for (const [id, item] of prev) {
+        if (item.status === 'error') {
+          const next = new Map(prev)
+          next.delete(id)
+          return next
+        }
+      }
+      return prev
+    })
+  }, [])
+
   useInput(
     (input, key) => {
       if (key.ctrl && input === 't') {
@@ -657,6 +676,13 @@ function AppContent({
         if (screen === 'done') resetToInput()
         // REQ-par-001: downloads keep running, the input stays reachable
         else if (screen === 'downloads') setScreen('input')
+        return
+      }
+      // per-row delete on the downloads screen: drop the topmost errored row
+      // (P0). Distinct from esc soft-cancel — `d` removes the stuck row so it
+      // won't be retried; the partial file stays on disk, safe to delete by hand.
+      if (input === 'd') {
+        if (screen === 'downloads') deleteErrorItem()
         return
       }
     },

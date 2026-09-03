@@ -473,7 +473,7 @@ export type DownloadArgs = {
   choice: DownloadChoice
   outDir: string
   ffmpeg: FfmpegStatus
-  /** --continue: resume a partial download instead of restarting (REQ-005). */
+  /** --continue: resume a partial download instead of restarting (REQ-005). Default ON like yt-dlp man; --no-continue disables. */
   resume?: boolean  /** Netscape cookies file, passed to yt-dlp for auth (REQ-007). */
   cookies?: string
   /** --embed-metadata --embed-thumbnail, ffmpeg-gated (REQ-009/011); resolved off-switch wins at parse (D3). */
@@ -504,7 +504,7 @@ export function buildDownloadArgs(opts: DownloadArgs): string[] {
     opts.url,
     ...(opts.cookies ? ['--cookies', opts.cookies] : []),
     ...opts.choice.args,
-    ...(opts.resume ? ['--continue'] : []),
+    ...(opts.resume === false ? [] : ['--continue']),
     // subs block — video kind only (REQ-014); --embed-subs gated on ffmpeg (REQ-013)
     ...(opts.subs !== undefined && opts.choice.kind === 'video'
       ? ['--write-subs', ...(opts.subs ? ['--sub-langs', opts.subs] : []), ...(opts.ffmpeg.available ? ['--embed-subs'] : [])]
@@ -678,8 +678,8 @@ export function download(
         pendingProgress = null
       }
       if (signal?.aborted) {
-        // cancelled on purpose — don't leave half-written files behind
-        void removePartials(destinations)
+        // soft cancel — preserve .part/.ytdl for --continue resume (P0)
+        void removePartials(destinations, {preservePart: true})
         reject(new Error('Descarga cancelada.'))
         return
       }
@@ -693,8 +693,17 @@ export function download(
 }
 
 // KEEPS .part files so a later --continue can resume (D6, REQ-006); deletes
-// only the final destination and the .ytdl resume metadata.
-export function removePartials(destinations: string[]): Promise<unknown> {
+// only the final destination and the .ytdl resume metadata on explicit delete.
+// On soft cancel (signal.aborted) we preserve .part/.ytdl for --continue resume.
+export function removePartials(
+  destinations: string[],
+  options?: {preservePart?: boolean},
+): Promise<unknown> {
+  if (options?.preservePart) {
+    // soft cancel — preserve .part and .ytdl for resume; keep everything for now
+    // so a later --continue can pick up where it left off
+    return Promise.resolve([])
+  }
   return Promise.allSettled(
     destinations
       .flatMap(dest => [dest, `${dest}.ytdl`])

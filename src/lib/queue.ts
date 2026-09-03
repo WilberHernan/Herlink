@@ -15,6 +15,10 @@ import {
   type ProbeResult,
   type VideoInfo,
 } from './ytdlp.js'
+import {
+  DEFAULT_MAX_RETRY_ATTEMPTS,
+  DEFAULT_RETRY_BACKOFF_MS,
+} from './constants.js'
 
 export type QueueItem = {url: string; playlistIndex?: number}
 export type QueueOutcome = {filepaths: string[]; errors: string[]; cancelled: boolean}
@@ -23,6 +27,11 @@ export type Outcome = {filepaths?: string[]; errors?: string[]; cancelled?: bool
 // DRM-style failures (permanent 403 on the video stream) fall back to
 // audio-only once — a fresh extraction cannot fix them (D-DRM)
 const AUDIO_FALLBACK_RE = /403|DRM|unable to download video data|protected/i
+
+/** Real timeout-based backoff wait; tests inject a no-op via QueueDeps.sleep. */
+function sleepMs(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
 
 /** Expand a playlist url into per-entry queue items, 1-based (D8). */
 export function playlistItems(url: string, count: number): QueueItem[] {
@@ -34,6 +43,8 @@ export type QueueDeps = {
   probe?: typeof probe
   download?: typeof download
   findFfmpeg?: typeof findFfmpeg
+  /** Backoff wait between retries; tests inject a no-op to keep suites fast. */
+  sleep?: (ms?: number) => Promise<void>
 }
 
 export type QueueRunOptions = {
@@ -52,6 +63,10 @@ export type QueueRunOptions = {
   socketTimeout?: number
   downloadArchive?: string
   breakOnExisting?: boolean
+  /** Base wait (ms) before each fresh-extraction retry, doubled per attempt (aria2 retry-wait). */
+  retryBackoffMs?: number
+  /** Max fresh-extraction retries after the first download attempt fails. */
+  maxRetryAttempts?: number
   // TTY defers to the picker (async promise resolved on select), scriptable
   // resolves immediately; 'playlist' takes the "descargar los N videos"
   // choice (REQ-018) and 'cancel' aborts the queue
@@ -241,50 +256,76 @@ export async function runItem(
       cancelled = true
       return {filepaths, errors, cancelled}
     }
-    // transient network/server error — retry once with a fresh extraction
-    hooks.onRetry?.()
-    try {
-      filepaths.push(
-        await doDownload(
-          {...base, url: item.url, ...(item.playlistIndex ? {playlistIndex: item.playlistIndex} : {})},
-          handlers,
-          signal,
-        ),
-      )
-    } catch (error2) {
+    // transient network/server error — retry with a fresh extraction and
+    // exponential backoff (aria2 retry-wait pattern, P0): yt-dlp's own burst
+    // retries give up within seconds on a real cut, so a brief outage gets a
+    // real wait (1s * 2^attempt) before re-extracting so it can recover
+    const baseWait = opts.retryBackoffMs ?? DEFAULT_RETRY_BACKOFF_MS
+    const maxAttempts = opts.maxRetryAttempts ?? DEFAULT_MAX_RETRY_ATTEMPTS
+    const doSleep = deps.sleep ?? sleepMs
+    let lastError: unknown = error
+    let drmMessage: string | undefined
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
       if (signal?.aborted) {
         cancelled = true
         return {filepaths, errors, cancelled}
       }
-      const message = error2 instanceof Error ? error2.message : String(error2)
-      if (choice.kind === 'video' && AUDIO_FALLBACK_RE.test(message)) {
-        // the video stream is DRM-blocked — a permanent 403 no fresh extraction
-        // can fix, so retry once as audio-only instead of failing
-        hooks.onAudioFallback?.()
-        try {
-          filepaths.push(
-            await doDownload(
-              {
-                ...base,
-                url: item.url,
-                choice: audioFallbackChoice(info, opts.ffmpeg),
-                ...(item.playlistIndex ? {playlistIndex: item.playlistIndex} : {}),
-              },
-              handlers,
-              signal,
-            ),
-          )
-        } catch (error3) {
-          if (signal?.aborted) {
-            cancelled = true
-            return {filepaths, errors, cancelled}
-          }
-          errors.push(error3 instanceof Error ? error3.message : String(error3))
+      hooks.onRetry?.()
+      // exponential backoff BEFORE this fresh extraction — let a short cut recover
+      await doSleep(baseWait * 2 ** attempt)
+      if (signal?.aborted) {
+        cancelled = true
+        return {filepaths, errors, cancelled}
+      }
+      try {
+        filepaths.push(
+          await doDownload(
+            {...base, url: item.url, ...(item.playlistIndex ? {playlistIndex: item.playlistIndex} : {})},
+            handlers,
+            signal,
+          ),
+        )
+        return {filepaths, errors, cancelled}
+      } catch (retryError) {
+        if (signal?.aborted) {
+          cancelled = true
+          return {filepaths, errors, cancelled}
         }
-      } else {
-        errors.push(message)
+        const message = retryError instanceof Error ? retryError.message : String(retryError)
+        if (choice.kind === 'video' && AUDIO_FALLBACK_RE.test(message)) {
+          // DRM is permanent — a fresh extraction cannot fix it, so stop
+          // retrying and fall back to audio-only (D-DRM)
+          drmMessage = message
+          break
+        }
+        lastError = retryError
       }
     }
+    if (drmMessage !== undefined) {
+      hooks.onAudioFallback?.()
+      try {
+        filepaths.push(
+          await doDownload(
+            {
+              ...base,
+              url: item.url,
+              choice: audioFallbackChoice(info, opts.ffmpeg),
+              ...(item.playlistIndex ? {playlistIndex: item.playlistIndex} : {}),
+            },
+            handlers,
+            signal,
+          ),
+        )
+      } catch (error3) {
+        if (signal?.aborted) {
+          cancelled = true
+          return {filepaths, errors, cancelled}
+        }
+        errors.push(error3 instanceof Error ? error3.message : String(error3))
+      }
+      return {filepaths, errors, cancelled}
+    }
+    errors.push(lastError instanceof Error ? lastError.message : String(lastError))
   }
   return {filepaths, errors, cancelled}
 }
@@ -359,6 +400,10 @@ export type ParallelQueueOptions = {
   socketTimeout?: number
   downloadArchive?: string
   breakOnExisting?: boolean
+  /** Base wait (ms) before each fresh-extraction retry, doubled per attempt (aria2 retry-wait). */
+  retryBackoffMs?: number
+  /** Max fresh-extraction retries after the first download attempt fails. */
+  maxRetryAttempts?: number
   /** Max concurrent tasks, default 3 (REQ-par-002, D-P1). */
   cap?: number
   /** 'cancel' cancels only this item — siblings' signals stay untouched (REQ-par-003). */
@@ -426,6 +471,8 @@ export function createParallelQueue(opts: ParallelQueueOptions): ParallelQueue {
     socketTimeout: opts.socketTimeout,
     downloadArchive: opts.downloadArchive,
     breakOnExisting: opts.breakOnExisting,
+    retryBackoffMs: opts.retryBackoffMs,
+    maxRetryAttempts: opts.maxRetryAttempts,
   }
 
   function itemHooks(itemId: string): ItemHooks {
@@ -546,6 +593,8 @@ export type ScriptableOptions = {
   socketTimeout?: number
   downloadArchive?: string
   breakOnExisting?: boolean
+  retryBackoffMs?: number
+  maxRetryAttempts?: number
   signal?: AbortSignal
 }
 
@@ -581,6 +630,8 @@ export async function runScriptable(
       socketTimeout: opts.socketTimeout,
       downloadArchive: opts.downloadArchive,
       breakOnExisting: opts.breakOnExisting,
+      retryBackoffMs: opts.retryBackoffMs,
+      maxRetryAttempts: opts.maxRetryAttempts,
       signal: opts.signal,
       choiceFor: info => (opts.scriptable === 'mp3' ? audioChoice(info) : bestChoice(info)),
       onStatus: message => process.stderr.write(message + '\n'),
