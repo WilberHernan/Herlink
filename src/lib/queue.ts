@@ -68,22 +68,20 @@ export type QueueRunOptions = {
   /** Max fresh-extraction retries after the first download attempt fails. */
   maxRetryAttempts?: number
   // TTY defers to the picker (async promise resolved on select), scriptable
-  // resolves immediately; 'playlist' takes the "descargar los N videos"
-  // choice (REQ-018) and 'cancel' aborts the queue
+  // resolves immediately; 'cancel' aborts the queue. 'playlist' is now a real
+  // DownloadChoice (flagged playlist:true) returned by playlistOptions.
   choiceFor: (
     info: VideoInfo,
-  ) =>
-    | DownloadChoice
-    | 'playlist'
-    | 'pick'
-    | 'cancel'
-    | Promise<DownloadChoice | 'playlist' | 'pick' | 'cancel'>
+  ) => DownloadChoice | 'pick' | 'cancel' | Promise<DownloadChoice | 'pick' | 'cancel'>
   signal?: AbortSignal
   onItem?: (index: number) => void // per-item hook for UI state (url, "video i/N")
   onRetry?: () => void // fired before the fresh-extraction retry
   onAudioFallback?: () => void // fired before the audio-only fallback download (video stream DRM-blocked)
   onProgress?: (progress: DownloadProgress) => void
   onProcessing?: () => void
+  /** Per-entry playlist counter: fired at the start of each download of a
+   * known-count playlist (i of N, 1-based). Unknown-count runs never fire it. */
+  onPlaylistEntry?: (current: number, total: number) => void
   onStatus?: (message: string) => void
 }
 
@@ -97,6 +95,8 @@ export type ItemHooks = {
   onAudioFallback?: () => void // fired before the audio-only fallback download (video stream DRM-blocked)
   onProgress?: (progress: DownloadProgress) => void
   onProcessing?: () => void
+  /** Per-entry playlist counter (i of N, 1-based); never fired for unknown-count runs. */
+  onPlaylistEntry?: (current: number, total: number) => void
 }
 
 /**
@@ -162,10 +162,10 @@ export async function runItem(
     onProgress: hooks.onProgress ?? (() => {}),
     onProcessing: hooks.onProcessing ?? (() => {}),
   }
-  if (choice === 'playlist') {
-    // "descargar los N videos" (REQ-018): iterate every entry with a fresh
-    // extraction per entry. The option carries no format choice, so
-    // entries download with the best available format (like --best).
+  if (choice.playlist) {
+    // Playlist expansion (REQ-018): iterate every entry with a fresh
+    // extraction per entry. The option may carry its own format args (standard
+    // 360p) or be empty (max quality — falls back to bestChoice per entry).
     if (!isPlaylistInfo(info)) {
       errors.push(`“${item.url}”: no se pudo detectar una playlist`)
       return {filepaths, errors, cancelled}
@@ -175,9 +175,10 @@ export async function runItem(
       errors.push(`“${item.url}”: la playlist no tiene videos`)
       return {filepaths, errors, cancelled}
     }
+    const entryChoice = choice.args.length > 0 ? choice : bestChoice(info)
     const entryBase = {
       ytdlp: opts.ytdlp,
-      choice: bestChoice(info),
+      choice: entryChoice,
       outDir: opts.outDir,
       ffmpeg: opts.ffmpeg,
       resume: opts.resume,
@@ -194,6 +195,8 @@ export async function runItem(
     }
     if (typeof count === 'number' && count > 0) {
       for (let i = 1; i <= count; i++) {
+        // per-entry playlist counter — the UI shows "i/N" while this entry runs
+        hooks.onPlaylistEntry?.(i, count)
         if (signal?.aborted) {
           cancelled = true
           break
@@ -350,6 +353,7 @@ export async function runQueue(
     onAudioFallback: opts.onAudioFallback,
     onProgress: opts.onProgress,
     onProcessing: opts.onProcessing,
+    onPlaylistEntry: opts.onPlaylistEntry,
   }
 
   for (const [index, item] of items.entries()) {
@@ -382,6 +386,7 @@ export type ItemStateStatus =
   | 'audio-fallback'
   | 'done'
   | 'error'
+  | 'cancelled'
 
 export type DoneInfo = {filepaths: string[]; errors: string[]; cancelled: boolean; aborted?: boolean}
 
@@ -406,13 +411,16 @@ export type ParallelQueueOptions = {
   maxRetryAttempts?: number
   /** Max concurrent tasks, default 3 (REQ-par-002, D-P1). */
   cap?: number
-  /** 'cancel' cancels only this item — siblings' signals stay untouched (REQ-par-003). */
+  /** 'cancel' cancels only this item — siblings' signals stay untouched (REQ-par-003). 'playlist' is a real DownloadChoice (flagged playlist:true). */
   choiceFor: (
     info: VideoInfo,
-  ) => DownloadChoice | 'playlist' | 'cancel' | Promise<DownloadChoice | 'playlist' | 'cancel'>
+  ) => DownloadChoice | 'cancel' | Promise<DownloadChoice | 'cancel'>
   onItemState: (itemId: string, status: ItemStateStatus) => void
   onTitle: (itemId: string, title: string) => void
   onProgress: (itemId: string, progress: DownloadProgress) => void
+  /** Per-entry playlist counter for an item (i of N, 1-based); unknown-count
+   * playlist runs never fire it. */
+  onPlaylistEntry?: (itemId: string, current: number, total: number) => void
   /** Fires once when the pool drains — aggregation lands with T3b (REQ-par-004). */
   onAllDone: (done: DoneInfo) => void
   deps?: QueueDeps
@@ -481,6 +489,7 @@ export function createParallelQueue(opts: ParallelQueueOptions): ParallelQueue {
       onAudioFallback: () => opts.onItemState(itemId, 'audio-fallback'),
       onProgress: progress => opts.onProgress(itemId, progress),
       onProcessing: () => opts.onItemState(itemId, 'processing'),
+      onPlaylistEntry: (current, total) => opts.onPlaylistEntry?.(itemId, current, total),
     }
   }
 
@@ -509,8 +518,14 @@ export function createParallelQueue(opts: ParallelQueueOptions): ParallelQueue {
         outcome.filepaths.push(...result.filepaths)
         outcome.errors.push(...result.errors)
         // a cancelled item (picker-ESC or abort) must NOT render as a successful
-        // 'done' ✓ — it produced nothing. Only a clean download is 'done'.
-        opts.onItemState(entry.itemId, result.errors.length > 0 || result.cancelled ? 'error' : 'done')
+        // 'done' ✓ — it produced nothing — nor as an 'error' ✗: it renders as a
+        // distinct terminal 'cancelled'. Only a clean download is 'done'.
+        const status: ItemStateStatus = result.cancelled
+          ? 'cancelled'
+          : result.errors.length > 0
+            ? 'error'
+            : 'done'
+        opts.onItemState(entry.itemId, status)
       } catch (error) {
         // runItem catches its own failures; this guards a rejecting choiceFor
         outcome.errors.push(error instanceof Error ? error.message : String(error))

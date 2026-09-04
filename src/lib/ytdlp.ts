@@ -195,7 +195,24 @@ export type VideoInfo = {
   // playlist context — present on first-entry JSON even with --no-playlist (D7)
   _type?: string
   playlist_id?: string
-  playlist_count?: number
+  playlist_count?: number | string | null
+}
+
+/**
+ * Coerced playlist count (D13): yt-dlp may return playlist_count as string "26"
+ * or null. Coerce with Number() and only accept positive integers. Invalid or
+ * missing values return undefined and emit a warning so the caller can fallback
+ * to a single-run playlist download instead of a per-entry loop.
+ */
+export function coercedPlaylistCount(info: VideoInfo): number | undefined {
+  const raw = info.playlist_count
+  if (raw == null || raw === '') return undefined
+  const n = Number(raw)
+  if (Number.isInteger(n) && n > 0) return n
+  if (Number.isInteger(n) && n === 0) return 0
+  // invalid (NaN, non-integer, negative) — warn and fallback to single-run
+  process.stderr.write(`playlist_count inválido "${String(raw)}" — usando descarga única (todos)\n`)
+  return undefined
 }
 
 /**
@@ -209,14 +226,42 @@ export function isPlaylistInfo(info: VideoInfo): boolean {
 }
 
 /**
- * Picker option for the playlist choice (REQ-018): offered alongside the
- * format choices when the probed URL is a playlist. count is undefined when
- * yt-dlp did not report playlist_count (D13 fallback label).
+ * Playlist picker options (REQ-018): expanded when the probed URL is a
+ * playlist. Returns three choices — one at max quality (empty args — signals the
+ * driver to use bestChoice per entry), one at standard 360p (SD to save
+ * data), and one audio-only for the whole playlist. count is unknown when
+ * yt-dlp did not report playlist_count (D13 fallback label "(todos)").
+ * String counts like "26" are coerced via Number(); only positive integers
+ * produce a concrete label, otherwise "(todos)" with a warning.
  */
-export function playlistOption(info: VideoInfo): {label: string; count?: number} | undefined {
-  if (!isPlaylistInfo(info)) return undefined
-  const count = typeof info.playlist_count === 'number' ? info.playlist_count : undefined
-  return {label: count ? `descargar los ${count} videos` : 'descargar todos los videos', count}
+export function playlistOptions(info: VideoInfo, ffmpeg?: FfmpegStatus): DownloadChoice[] {
+  if (!isPlaylistInfo(info)) return []
+  const coerced = coercedPlaylistCount(info)
+  const countShort = coerced !== undefined && coerced > 0 ? `(${coerced})` : coerced === 0 ? '(0)' : '(todos)'
+  const hasFfmpeg = ffmpeg?.available !== false
+  const audioArgs = hasFfmpeg
+    ? ['-f', 'ba/b', '-x', '--audio-format', 'mp3', '--audio-quality', '0']
+    : ['-f', 'ba/b']
+  return [
+    {
+      kind: 'video',
+      label: `Playlist · MAX ${countShort}`,
+      args: [],
+      playlist: true,
+    },
+    {
+      kind: 'video',
+      label: `Playlist · 360p ${countShort}`,
+      args: ['-f', 'bv*[height<=360]+ba/b[height<=360]', '--merge-output-format', 'mp4'],
+      playlist: true,
+    },
+    {
+      kind: 'audio',
+      label: `Playlist · AUDIO ${countShort}`,
+      args: audioArgs,
+      playlist: true,
+    },
+  ]
 }
 
 type RawFormat = {
@@ -318,6 +363,8 @@ export type DownloadChoice = {
   label: string
   kind: 'video' | 'audio'
   args: string[]
+  /** Marks a choice that expands the whole playlist (REQ-018). */
+  playlist?: boolean
 }
 
 const MAX_VIDEO_CHOICES = 8
@@ -386,7 +433,7 @@ export function buildChoices(info: VideoInfo, ffmpeg?: FfmpegStatus): DownloadCh
   if (choices.length === 0) {
     choices.push({
       kind: 'video',
-      label: 'mejor disponible · mp4',
+      label: 'Actual · MAX (1)',
       args: [
         '-f',
         // BUG-3: without ffmpeg use a pre-muxed file (b) — bv*+ba needs a merge
@@ -400,13 +447,12 @@ export function buildChoices(info: VideoInfo, ffmpeg?: FfmpegStatus): DownloadCh
       ],
     })
   }
-  const audioSizeLabel = audioSize ? ` · ~${formatBytes(audioSize)}` : ''
   // BUG-3: mp3 transcoding (-x --audio-format mp3) requires ffmpeg. Without it
   // offer the best native audio stream instead (ba/b) so the choice still works.
   const hasFfmpeg2 = ffmpeg?.available !== false
   choices.push({
     kind: 'audio',
-    label: hasFfmpeg2 ? `solo audio · mp3${audioSizeLabel}` : `solo audio${audioSizeLabel}`,
+    label: hasFfmpeg2 ? 'Audio · mp3' : 'Audio',
     args: hasFfmpeg2 ? ['-f', 'ba/b', '-x', '--audio-format', 'mp3', '--audio-quality', '0'] : ['-f', 'ba/b'],
   })
 
@@ -421,13 +467,13 @@ export function scoreVideo(f: RawFormat): number {
 }
 
 /** The top video choice (or the "mejor disponible" fallback) — what --best downloads. */
-export function bestChoice(info: VideoInfo): DownloadChoice {
-  return buildChoices(info)[0]!
+export function bestChoice(info: VideoInfo, ffmpeg?: FfmpegStatus): DownloadChoice {
+  return buildChoices(info, ffmpeg)[0]!
 }
 
 /** The audio-only mp3 choice — what --mp3 downloads. */
-export function audioChoice(info: VideoInfo): DownloadChoice {
-  return buildChoices(info).at(-1)!
+export function audioChoice(info: VideoInfo, ffmpeg?: FfmpegStatus): DownloadChoice {
+  return buildChoices(info, ffmpeg).at(-1)!
 }
 
 /**

@@ -9,6 +9,12 @@ import type {DoneInfo, ParallelQueue, ParallelQueueOptions, QueueDeps} from './q
 import type {DownloadArgs, DownloadChoice, VideoInfo} from './ytdlp.js'
 
 const choice: DownloadChoice = {label: '1080p · mp4', kind: 'video', args: ['-f', 'bv*+ba/b']}
+const playlistChoice: DownloadChoice = {
+  label: 'Playlist · MAX (3)',
+  kind: 'video',
+  args: [],
+  playlist: true,
+}
 const info = (title = 'video'): VideoInfo => ({title})
 
 test('runQueue probes and downloads a single item in order, aggregating the filepath', async () => {
@@ -375,7 +381,7 @@ test('runQueue expands a playlist probe into per-entry downloads when the playli
   const calls: string[] = []
   const outcome = await runQueue(
     [{url: 'https://example.com/pl'}],
-    {ytdlp: 'yt-dlp', outDir: '/tmp/Downloads', ffmpeg: {available: false}, choiceFor: () => 'playlist'},
+    {ytdlp: 'yt-dlp', outDir: '/tmp/Downloads', ffmpeg: {available: false}, choiceFor: () => playlistChoice},
     {
       probe: async () => ({
         info: {title: 'pl', playlist_id: 'PL123', playlist_count: 3},
@@ -402,7 +408,7 @@ test('runQueue surfaces a clear error and downloads nothing for a 0-entry playli
   let downloads = 0
   const outcome = await runQueue(
     [{url: 'https://example.com/pl'}],
-    {ytdlp: 'yt-dlp', outDir: '/tmp/Downloads', ffmpeg: {available: false}, choiceFor: () => 'playlist'},
+    {ytdlp: 'yt-dlp', outDir: '/tmp/Downloads', ffmpeg: {available: false}, choiceFor: () => playlistChoice},
     {
       probe: async () => ({
         info: {title: 'pl', playlist_id: 'PL123', playlist_count: 0},
@@ -424,7 +430,7 @@ test('runQueue falls back to a single whole-playlist run when playlist_count is 
   let seen: DownloadArgs | undefined
   const outcome = await runQueue(
     [{url: 'https://example.com/pl'}],
-    {ytdlp: 'yt-dlp', outDir: '/tmp/Downloads', ffmpeg: {available: false}, choiceFor: () => 'playlist'},
+    {ytdlp: 'yt-dlp', outDir: '/tmp/Downloads', ffmpeg: {available: false}, choiceFor: () => playlistChoice},
     {
       probe: async () => ({
         info: {title: 'pl', playlist_id: 'PL123'}, // no playlist_count
@@ -446,7 +452,7 @@ test('runQueue records a mid-playlist entry failure and continues with the remai
   const calls: string[] = []
   const outcome = await runQueue(
     [{url: 'https://example.com/pl'}],
-    {ytdlp: 'yt-dlp', outDir: '/tmp/Downloads', ffmpeg: {available: false}, choiceFor: () => 'playlist'},
+    {ytdlp: 'yt-dlp', outDir: '/tmp/Downloads', ffmpeg: {available: false}, choiceFor: () => playlistChoice},
     {
       probe: async () => ({
         info: {title: 'pl', playlist_id: 'PL123', playlist_count: 3},
@@ -706,6 +712,7 @@ type PqOverrides = Partial<{
   onItemState: ParallelQueueOptions['onItemState']
   onTitle: ParallelQueueOptions['onTitle']
   onProgress: ParallelQueueOptions['onProgress']
+  onPlaylistEntry: ParallelQueueOptions['onPlaylistEntry']
   onAllDone: ParallelQueueOptions['onAllDone']
 }>
 
@@ -1080,8 +1087,8 @@ test('parallelQueue fires onAllDone exactly once when drained, aggregating every
 })
 
 test('parallelQueue defers onAllDone while a pick pends, firing after the pick settles with its result (REQ-par-017)', async () => {
-  let resolvePick!: (value: DownloadChoice | 'playlist' | 'cancel') => void
-  const pick = new Promise<DownloadChoice | 'playlist' | 'cancel'>(resolve => {
+  let resolvePick!: (value: DownloadChoice | 'cancel') => void
+  const pick = new Promise<DownloadChoice | 'cancel'>(resolve => {
     resolvePick = resolve
   })
   let pickedTitle = ''
@@ -1124,8 +1131,8 @@ test('parallelQueue defers onAllDone while a pick pends, firing after the pick s
 })
 
 test('parallelQueue defers done while a pick pends and drains after the picker cancels that item (REQ-par-009/017)', async () => {
-  let resolvePick!: (value: DownloadChoice | 'playlist' | 'cancel') => void
-  const pick = new Promise<DownloadChoice | 'playlist' | 'cancel'>(resolve => {
+  let resolvePick!: (value: DownloadChoice | 'cancel') => void
+  const pick = new Promise<DownloadChoice | 'cancel'>(resolve => {
     resolvePick = resolve
   })
   const downloads: string[] = []
@@ -1194,7 +1201,7 @@ test('parallelQueue playlist holds exactly 1 slot, entries sequential, queued vi
       },
     },
     {
-      choiceFor: videoInfo => (videoInfo.title === 'pl' ? 'playlist' : pqChoice),
+      choiceFor: videoInfo => (videoInfo.title === 'pl' ? playlistChoice : pqChoice),
       onAllDone: done => doneCalls.push(done),
     },
   )
@@ -1226,6 +1233,50 @@ test('parallelQueue playlist holds exactly 1 slot, entries sequential, queued vi
   assert.equal(queue.hasActive(), false)
   assert.equal(doneCalls.length, 1)
   assert.equal(doneCalls[0]!.filepaths.length, 8, '5 playlist entries + 3 videos must aggregate')
+})
+
+test('parallelQueue emits a per-entry playlist counter (i/N) for a known-count playlist (i/N)', async () => {
+  const entries: Array<[string, number, number]> = []
+  const queue = makeParallelQueue(
+    {
+      probe: async () => ({info: {title: 'pl', playlist_id: 'PL1', playlist_count: 3}, infoJsonPath: '/tmp/pl.json'}),
+      download: async (opts: DownloadArgs & {ytdlp: string}) => `/tmp/pl-${opts.playlistIndex}.mp4`,
+    },
+    {
+      choiceFor: () => playlistChoice,
+      onPlaylistEntry: (itemId, current, total) => entries.push([itemId, current, total]),
+    },
+  )
+  queue.start({url: 'https://pl.example/pl'})
+  await flush()
+  assert.deepEqual(
+    entries.map(e => e.slice(1)),
+    [
+      [1, 3],
+      [2, 3],
+      [3, 3],
+    ],
+    'the counter must fire once per entry, 1-based with the known total',
+  )
+  assert.equal(queue.hasActive(), false)
+})
+
+test('parallelQueue renders a cancelled item as "cancelled", not "error"', async () => {
+  const statuses: string[] = []
+  const queue = makeParallelQueue(
+    {
+      probe: async () => ({info: info(), infoJsonPath: '/tmp/info.json'}),
+      download: async () => '/tmp/a.mp4',
+    },
+    {
+      choiceFor: () => 'cancel',
+      onItemState: (itemId, status) => statuses.push(`${itemId}:${status}`),
+    },
+  )
+  queue.start({url: 'https://a.example/v'})
+  await flush()
+  assert.ok(statuses.includes('item-0:cancelled'), 'a cancelled item must emit cancelled, not error')
+  assert.ok(!statuses.includes('item-0:error'), 'a pure cancel must never render as error')
 })
 
 test('parallelQueue aggregates every item error, not only the first (REQ-par-016)', async () => {

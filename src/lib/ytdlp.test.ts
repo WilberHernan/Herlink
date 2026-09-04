@@ -16,7 +16,7 @@ import {
   effectiveNoUpdate,
   isPlaylistInfo,
   maybeSelfUpdate,
-  playlistOption,
+  playlistOptions,
   probe,
   removePartials,
   type DownloadChoice,
@@ -168,19 +168,39 @@ test('isPlaylistInfo() returns false for a plain single video', () => {
   assert.equal(isPlaylistInfo({title: 'x', _type: 'video'}), false)
 })
 
-test('playlistOption() labels the playlist choice with the count (REQ-018)', () => {
-  assert.deepEqual(playlistOption({title: 'x', playlist_id: 'PL123', playlist_count: 5}), {
-    label: 'descargar los 5 videos',
-    count: 5,
+test('playlistOptions() returns max-quality and standard 360p choices with the count (REQ-018)', () => {
+  const options = playlistOptions({title: 'x', playlist_id: 'PL123', playlist_count: 5})
+  assert.equal(options.length, 3, 'three playlist options — max, 360p and audio')
+  assert.deepEqual(options[0], {
+    kind: 'video',
+    label: 'Playlist · MAX (5)',
+    args: [],
+    playlist: true,
   })
-  assert.equal(playlistOption({title: 'x'}), undefined, 'single videos get no playlist option')
+  assert.deepEqual(options[1], {
+    kind: 'video',
+    label: 'Playlist · 360p (5)',
+    args: ['-f', 'bv*[height<=360]+ba/b[height<=360]', '--merge-output-format', 'mp4'],
+    playlist: true,
+  })
+  assert.deepEqual(options[2], {
+    kind: 'audio',
+    label: 'Playlist · AUDIO (5)',
+    args: ['-f', 'ba/b', '-x', '--audio-format', 'mp3', '--audio-quality', '0'],
+    playlist: true,
+  })
+  assert.deepEqual(playlistOptions({title: 'x'}), [], 'single videos get no playlist options')
 })
 
-test('playlistOption() falls back to a generic label when the count is unknown (D13)', () => {
-  assert.deepEqual(playlistOption({title: 'x', extractor_key: 'X:playlist'}), {
-    label: 'descargar todos los videos',
-    count: undefined,
-  })
+test('playlistOptions() falls back to a generic label when the count is unknown (D13)', () => {
+  const options = playlistOptions({title: 'x', extractor_key: 'X:playlist'})
+  assert.equal(options.length, 3)
+  assert.equal(options[0]!.label, 'Playlist · MAX (todos)')
+  assert.equal(options[1]!.label, 'Playlist · 360p (todos)')
+  assert.equal(options[2]!.label, 'Playlist · AUDIO (todos)')
+  assert.equal(options[0]!.playlist, true)
+  assert.equal(options[1]!.playlist, true)
+  assert.equal(options[2]!.playlist, true)
 })
 
 test('playlistItems() expands a playlist url into per-entry items with 1-based indexes (D8)', () => {

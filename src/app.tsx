@@ -32,7 +32,7 @@ import {
   findFfmpeg,
   isBundledBinary,
   maybeSelfUpdate,
-  playlistOption,
+  playlistOptions,
   type DownloadChoice,
   type DownloadProgress,
   type FfmpegStatus,
@@ -41,9 +41,10 @@ import {
 
 const ACTION_LABEL = 'bajar'
 
-// SelectInput sentinel for the "descargar los N videos" option (REQ-018) —
-// real choices are indexes into choices[], so -1 can never collide
-const PLAYLIST_CHOICE_VALUE = -1
+// SelectInput sentinel values for the playlist options (REQ-018): multiple
+// playlist choices map to negative values -(i + 1) for index i (so -1, -2, ...),
+// which can never collide with the non-negative real choice indexes.
+const choiceValueFor = (playlistIndex: number) => -(playlistIndex + 1)
 
 const choiceLabel = (choice: DownloadChoice) => `${choice.kind === 'audio' ? '♪ ' : '▶ '}${choice.label}`
 
@@ -110,6 +111,8 @@ export type ItemState = {
   title?: string
   progress?: DownloadProgress
   error?: string
+  /** Per-entry playlist counter (i of N, 1-based) while a playlist downloads. */
+  playlist?: {current: number; total: number}
 }
 
 /** What the done screen renders — heading, sub line and every failed item's
@@ -131,6 +134,14 @@ export function doneSummary(done: DoneInfo): DoneSummary {
       errors: [...errors],
     }
   }
+  if (errors.length > 0) {
+    const partial = filepaths.length > 0
+    return {
+      heading: partial ? '✗ Descarga parcial' : '✗ No se pudo descargar',
+      sub: partial ? 'Se guardaron los archivos que sí se descargaron, pero hubo errores:' : 'No se descargó ningún archivo:',
+      errors: [...errors],
+    }
+  }
   return {
     heading: filepaths.length > 1 ? `✓ Descargados ${filepaths.length} archivos` : '✓ Descargado',
     sub: filepaths.length > 1 ? 'Están en:' : 'Tu archivo está en:',
@@ -148,14 +159,15 @@ export function doneSummary(done: DoneInfo): DoneSummary {
 // the DRM-blocked video stream retrying once as audio-only.
 const VALID_TRANSITIONS: Record<ItemStateStatus, readonly ItemStateStatus[]> = {
   queued: ['queued', 'probing'],
-  probing: ['picking', 'done', 'error'],
-  picking: ['downloading', 'done', 'error'],
-  downloading: ['processing', 'refreshing', 'done', 'error'],
-  processing: ['processing', 'refreshing', 'downloading', 'done', 'error'],
-  refreshing: ['downloading', 'processing', 'audio-fallback', 'done', 'error'],
-  'audio-fallback': ['processing', 'done', 'error'],
+  probing: ['picking', 'done', 'error', 'cancelled'],
+  picking: ['downloading', 'done', 'error', 'cancelled'],
+  downloading: ['processing', 'refreshing', 'done', 'error', 'cancelled'],
+  processing: ['processing', 'refreshing', 'downloading', 'done', 'error', 'cancelled'],
+  refreshing: ['downloading', 'processing', 'audio-fallback', 'done', 'error', 'cancelled'],
+  'audio-fallback': ['processing', 'done', 'error', 'cancelled'],
   done: [],
   error: [],
+  cancelled: [],
 }
 
 // statuses that may receive a progress tick
@@ -169,7 +181,11 @@ const PROGRESS_STATUSES: readonly ItemStateStatus[] = ['downloading', 'processin
  */
 export function itemStateTransition(
   prev: ItemState,
-  event: ItemStateStatus | {type: 'progress'; progress: DownloadProgress} | {type: 'title'; title: string},
+  event:
+    | ItemStateStatus
+    | {type: 'progress'; progress: DownloadProgress}
+    | {type: 'title'; title: string}
+    | {type: 'playlist'; current: number; total: number},
 ): ItemState {
   if (typeof event === 'object') {
     if (event.type === 'progress') {
@@ -177,6 +193,10 @@ export function itemStateTransition(
         throw new Error(`invalid itemStateTransition: progress event in status ${prev.status}`)
       }
       return {...prev, progress: event.progress}
+    }
+    if (event.type === 'playlist') {
+      // per-entry playlist counter — stash so the downloading row can show "i/N"
+      return {...prev, playlist: {current: event.current, total: event.total}}
     }
     // title event: stash the probe title on the row
     return {...prev, title: event.title}
@@ -270,6 +290,7 @@ const STATUS_LABEL: Record<ItemStateStatus, string> = {
   'audio-fallback': 'bajando solo audio…',
   done: '✓',
   error: '✗',
+  cancelled: '✗ Cancelado',
 }
 
 const HINTS: Record<Screen, Array<[string, string]>> = {
@@ -394,7 +415,7 @@ function AppContent({
   const ffmpegRef = useRef<FfmpegStatus | undefined>(undefined)
   // resolves each open picker's choiceFor promise once the user answers; esc
   // resolves with 'cancel' so only that item skips (REQ-par-009)
-  const pickersRef = useRef(new Map<string, (choice: DownloadChoice | 'playlist' | 'cancel') => void>())
+  const pickersRef = useRef(new Map<string, (choice: DownloadChoice | 'cancel') => void>())
   const pickInfosRef = useRef(new Map<string, VideoInfo>())
   // itemId whose choiceFor is about to fire — set by the 'picking' event
   const pickForRef = useRef<string | undefined>(undefined)
@@ -527,6 +548,12 @@ function AppContent({
               const row = prev.get(itemId)
               if (!row) return prev
               return new Map(prev).set(itemId, itemStateTransition(row, {type: 'progress', progress}))
+            }),
+          onPlaylistEntry: (itemId, current, total) =>
+            setItems(prev => {
+              const row = prev.get(itemId)
+              if (!row) return prev
+              return new Map(prev).set(itemId, itemStateTransition(row, {type: 'playlist', current, total}))
             }),
           choiceFor: async info => {
             const itemId = pickForRef.current
@@ -740,7 +767,7 @@ function AppContent({
   const pickerUrl = pickerItemId ? items.get(pickerItemId)?.url : undefined
   const pickerPlatform = pickerUrl ? detectPlatform(pickerUrl) : undefined
   const pickerChoices = pickerInfo ? buildChoices(pickerInfo, ffmpegRef.current) : []
-  const pickerPlaylist = pickerInfo ? playlistOption(pickerInfo) : undefined
+  const pickerPlaylists = pickerInfo ? playlistOptions(pickerInfo) : []
 
   // keep the click/↵-hint cursor (highlightRef) aligned with the controlled
   // index — the wheel and the keys both move the state, so the ref is derived
@@ -760,10 +787,12 @@ function AppContent({
     if (!item) return
     const resolve = pickersRef.current.get(itemId)
     if (!resolve) return
-    let choice: DownloadChoice | 'playlist' | 'cancel'
-    if (item.value === PLAYLIST_CHOICE_VALUE) {
-      // "descargar los N videos" (REQ-018) — the driver expands the probe
-      choice = 'playlist'
+    let choice: DownloadChoice | 'cancel'
+    if (item.value < 0) {
+      // playlist option at index -(value+1) (REQ-018)
+      const playlistOpt = pickerPlaylists[-1 - item.value]
+      if (!playlistOpt) return
+      choice = playlistOpt
     } else {
       const picked = pickerChoices[item.value]
       if (!picked) return
@@ -823,11 +852,8 @@ function AppContent({
     for (const [index, choice] of pickerChoices.entries()) {
       clickTargets.push({match: choiceLabel(choice), action: () => handlePick({value: index})})
     }
-    if (pickerPlaylist) {
-      clickTargets.push({
-        match: choiceLabel({kind: 'video', label: pickerPlaylist.label, args: []}),
-        action: () => handlePick({value: PLAYLIST_CHOICE_VALUE}),
-      })
+    for (const [index, playlistOpt] of pickerPlaylists.entries()) {
+      clickTargets.push({match: choiceLabel(playlistOpt), action: () => handlePick({value: choiceValueFor(index)})})
     }
   }
   // done screen: no visible action — Enter returns to the start (see HINTS + useInput)
@@ -843,7 +869,7 @@ function AppContent({
         // touch drags and physical wheel rotation into SGR wheel events.
         // Only the visible picker consumes them (wheel-up → choice 0 side)
         if (screen !== 'picker' || !pickerItemId) return
-        const total = pickerChoices.length + (pickerPlaylist ? 1 : 0)
+        const total = pickerChoices.length + pickerPlaylists.length
         if (total === 0) return
         setPickerActiveIndex(prev => Math.max(0, Math.min(prev + pickerWheelStep(event.kind), total - 1)))
         return
@@ -880,6 +906,8 @@ function AppContent({
         return theme.success
       case 'error':
         return theme.error
+      case 'cancelled':
+        return theme.warning
       case 'picking':
         return theme.accent
       case 'refreshing':
@@ -965,16 +993,12 @@ function AppContent({
                   label: choiceLabel(choice),
                   value: index,
                 })),
-                // REQ-018: playlist option alongside the format choices
-                ...(pickerPlaylist
-                  ? [
-                      {
-                        key: 'playlist',
-                        label: choiceLabel({kind: 'video', label: pickerPlaylist.label, args: []}),
-                        value: PLAYLIST_CHOICE_VALUE,
-                      },
-                    ]
-                  : []),
+                // REQ-018: playlist options alongside the format choices
+                ...pickerPlaylists.map((opt, index) => ({
+                  key: 'playlist-' + index,
+                  label: choiceLabel(opt),
+                  value: choiceValueFor(index),
+                })),
               ]}
               limit={pickerListLimit}
               selectedIndex={pickerActiveIndex}
@@ -997,9 +1021,15 @@ function AppContent({
               {Array.from(items.entries()).map(([itemId, item]) => (
                 <Box key={itemId} flexDirection="column" width={boxWidth}>
                   {item.status === 'downloading' && item.title ? (
-                    /* downloading: title + bar on the SAME line */
+                    /* downloading: title + bar on the SAME line. A playlist entry
+                       shows the per-entry counter "i/N" instead of the playlist
+                       title, since the bar tracks that entry. */
                     <Box justifyContent="space-between">
-                      <Text color={theme.muted}>{truncate(item.title.replace(/_/g, ' '), downloadTitleMax)}</Text>
+                      <Text color={theme.muted}>
+                        {item.playlist
+                          ? `${item.playlist.current}/${item.playlist.total}`
+                          : truncate(item.title.replace(/_/g, ' '), downloadTitleMax)}
+                      </Text>
                       <Text>
                         {item.progress?.totalBytes ? (
                           <ProgressBar percent={item.progress.downloadedBytes / item.progress.totalBytes} width={progressBarWidth} />
@@ -1012,10 +1042,14 @@ function AppContent({
                         )}
                       </Text>
                     </Box>
-                  ) : item.status === 'probing' ? (
+                  ) : item.status === 'probing' || item.status === 'processing' ? (
                     /* probing: mirror the empty-state first loader — same accent
                        color, same centering — so it reads as one continuous
-                       pulse (no url, no text) */
+                       pulse (no url, no text).
+                       processing (ffmpeg convert): same centered pulse, same
+                       accent — no url in the corner, no duplicated title — so the
+                       flow is resolution > download bar > pulse loader > "Tu
+                       archivo está en...", and the loader holds until done. */
                     <Box alignItems="center" justifyContent="center" width={boxWidth}>
                       <Text color={theme.accent}>
                         <PulseDots color={theme.accent} />
@@ -1023,13 +1057,11 @@ function AppContent({
                     </Box>
                   ) : (
                     /* other states: title/url + status. Active states show the
-                       loader instead of a word; quiet/terminal states keep the label.
-                       processing (ffmpeg convert) renders NO loader and NO label —
-                       the conversion runs in the background so the flow jumps
-                       straight from the download bar to "Tu archivo está en..." */
+                       loader instead of a word; quiet/terminal states keep the
+                       label. */
                     <Box justifyContent="space-between">
                       <Text color={theme.muted}>{truncate(item.url, downloadTitleMax)}</Text>
-                      {item.status === 'processing' ? null : PROGRESS_STATUSES.includes(item.status) ? (
+                      {PROGRESS_STATUSES.includes(item.status) ? (
                         <Text bold>
                           <PulseDots color={rowColor(item.status)} />
                         </Text>
@@ -1056,8 +1088,10 @@ function AppContent({
       {screen === 'done' && doneInfo && doneSummaryInfo && (
         <Box flexDirection="column" alignItems="center">
           <Text>
-            <Text bold color={doneInfo.cancelled ? theme.warning : theme.success}>✓ </Text>
-            <Text bold color={theme.accent}>{doneSummaryInfo.heading.replace(/^✓\s*/, '')}{' '}</Text>
+            <Text bold color={doneInfo.cancelled ? theme.warning : doneSummaryInfo.errors.length > 0 ? theme.error : theme.success}>
+              {doneInfo.cancelled || doneSummaryInfo.errors.length > 0 ? '✗ ' : '✓ '}
+            </Text>
+            <Text bold color={theme.accent}>{doneSummaryInfo.heading.replace(/^[✓✗]\s*/, '')}{' '}</Text>
             <Text color={theme.muted}>{doneSummaryInfo.sub}</Text>
           </Text>
           <Gap />

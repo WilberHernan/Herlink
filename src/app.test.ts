@@ -137,8 +137,21 @@ test('doneSummary: cancelled with none → "✗ Cancelado" + "No se descargó ni
 
 test('doneSummary: every failed item error listed, not only errors[0] (REQ-par-016)', () => {
   const summary = doneSummary(doneInfo({filepaths: ['/a.mp4'], errors: ['boom 1', 'boom 2']}))
-  assert.equal(summary.heading, '✓ Descargado')
+  assert.equal(summary.heading, '✗ Descarga parcial')
   assert.deepEqual(summary.errors, ['boom 1', 'boom 2'])
+})
+
+test('doneSummary: pure failure (errors, no files) → ✗ No se pudo descargar, never ✓ Descargado (H1)', () => {
+  const summary = doneSummary(doneInfo({errors: ['Unsupported URL: https://example.com/v']}))
+  assert.equal(summary.heading, '✗ No se pudo descargar')
+  assert.equal(summary.sub, 'No se descargó ningún archivo:')
+  assert.deepEqual(summary.errors, ['Unsupported URL: https://example.com/v'])
+  assert.ok(!summary.heading.includes('✓'), 'heading must not claim success when there are errors')
+})
+
+test('doneSummary: success requires zero errors — ✓ Descargado only when nothing failed', () => {
+  assert.equal(doneSummary(doneInfo({filepaths: ['/a.mp4'], errors: []})).heading, '✓ Descargado')
+  assert.equal(doneSummary(doneInfo({filepaths: ['/a.mp4'], errors: []})).sub, 'Tu archivo está en:')
 })
 
 test('doneSummary: returned errors array is a copy — caller mutation cannot leak in', () => {
@@ -236,6 +249,19 @@ test('itemStateTransition: invalid transition throws (downloading → audio-fall
 
 test('itemStateTransition: multi-entry playlist keeps processing → processing between ffmpeg merges', () => {
   assert.equal(itemStateTransition(itemState('processing'), 'processing').status, 'processing')
+})
+
+test('itemStateTransition: cancel resolves the running states to a terminal cancelled (not error)', () => {
+  assert.equal(itemStateTransition(itemState('downloading'), 'cancelled').status, 'cancelled')
+  assert.equal(itemStateTransition(itemState('picking'), 'cancelled').status, 'cancelled')
+  assert.equal(itemStateTransition(itemState('probing'), 'cancelled').status, 'cancelled')
+  assert.throws(() => itemStateTransition(itemState('cancelled'), 'done'), /invalid itemStateTransition/)
+})
+
+test('itemStateTransition: playlist event stashes the per-entry counter without changing status', () => {
+  const s = itemStateTransition(itemState('downloading'), {type: 'playlist', current: 3, total: 26})
+  assert.equal(s.status, 'downloading')
+  assert.deepEqual(s.playlist, {current: 3, total: 26})
 })
 
 test('screenAfterPickerClose: resolving the last open picker returns to the run (REQ-par-005)', () => {
